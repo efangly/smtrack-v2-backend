@@ -16,7 +16,28 @@ networks:
     name: ${EXTERNAL_NETWORK:-proxy}
     external: true
 
+# credential ของ MinIO ที่มีอยู่แล้วบน dev server — reuse ตัวเดียวกับที่ app ใช้ export
+# archive (ARCHIVE_S3_ACCESS_KEY/SECRET_KEY) เพราะเป็น MinIO instance เดียวกัน
+x-minio-env: &minio-env
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+  ARCHIVE_S3_ACCESS_KEY: ${ARCHIVE_S3_ACCESS_KEY}
+  ARCHIVE_S3_SECRET_KEY: ${ARCHIVE_S3_SECRET_KEY}
+  ARCHIVE_S3_REGION: ${ARCHIVE_S3_REGION:-us-east-1}
+
 services:
+  # job แบบ one-shot: สร้าง bucket ของ tempo/loki บน MinIO เดิมให้พร้อมก่อน tempo/loki จะ start
+  object-storage-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    environment:
+      <<: *minio-env
+      TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET:-tempo-traces}
+      LOKI_S3_BUCKET: ${LOKI_S3_BUCKET:-loki-chunks}
+    entrypoint: >
+      sh -c "mc alias set local http://$$MINIO_ENDPOINT $$ARCHIVE_S3_ACCESS_KEY $$ARCHIVE_S3_SECRET_KEY &&
+             mc mb --ignore-existing local/$$TEMPO_S3_BUCKET &&
+             mc mb --ignore-existing local/$$LOKI_S3_BUCKET"
+    restart: 'no'
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.121.0
     command: ['--config=/etc/otelcol/config.yaml']
@@ -27,20 +48,34 @@ services:
 
   tempo:
     image: grafana/tempo:2.7.1
-    command: ['-config.file=/etc/tempo/tempo.yaml']
+    # expand-env=true ให้ ${...} ใน tempo.yaml ถูกแทนที่ด้วย env ด้านล่างตอน start
+    command: ['-config.file=/etc/tempo/tempo.yaml', '-config.expand-env=true']
     user: root
+    environment:
+      <<: *minio-env
+      TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET:-tempo-traces}
     volumes:
       - ./docker/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
+    depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   loki:
     image: grafana/loki:3.4.2
-    command: ['-config.file=/etc/loki/loki.yaml']
+    # expand-env=true ให้ ${...} ใน loki.yaml ถูกแทนที่ด้วย env ด้านล่างตอน start
+    command: ['-config.file=/etc/loki/loki.yaml', '-config.expand-env=true']
     user: root
+    environment:
+      <<: *minio-env
+      LOKI_S3_BUCKET: ${LOKI_S3_BUCKET:-loki-chunks}
     volumes:
       - ./docker/loki/loki.yaml:/etc/loki/loki.yaml:ro
       - loki-data:/loki
+    depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   prometheus:
