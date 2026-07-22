@@ -1,0 +1,323 @@
+{
+  "info": {
+    "name": "SMtrack v2 Backend",
+    "description": "REST API collection สำหรับ SMtrack v2 backend (NestJS, IoT telemetry/notification ผ่าน MQTT + TimescaleDB).\n\nหมายเหตุ: โค้ดปัจจุบันยังไม่มี auth guard ผูกใช้งานจริง (ไม่มี AuthGuard/passport-jwt ใน src/) ทุก endpoint จึงยังเปิดใช้งานได้โดยไม่ต้องใส่ token — แต่ collection นี้เตรียม Bearer token ไว้ล่วงหน้าที่ระดับ collection (ตัวแปร jwtToken) เผื่อไว้สำหรับตอนที่เปิดใช้ auth guard จาก auth service แยกในอนาคต\n\nไม่รวม MQTT/RabbitMQ @EventPattern handlers (mqtt.controller.ts, consumer.controller.ts) เพราะไม่ใช่ REST endpoint",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwtToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "jwtToken",
+      "value": "",
+      "type": "string",
+      "description": "Bearer token ที่ออกโดย auth service แยกต่างหาก — ยังไม่ถูก enforce โดย backend นี้ในปัจจุบัน"
+    },
+    {
+      "key": "serial",
+      "value": "DEV-001",
+      "type": "string",
+      "description": "serial ของ device ที่มีอยู่แล้ว ใช้กับ GET/notification/telemetry/logday/graph"
+    },
+    {
+      "key": "newDeviceSerial",
+      "value": "TEST-POSTMAN-001",
+      "type": "string",
+      "description": "serial ใหม่ที่ยังไม่มีในระบบ ใช้กับ POST /devices เท่านั้น (POST ด้วย serial ที่ซ้ำจะได้ 500 Unique constraint failed)"
+    },
+    {
+      "key": "month",
+      "value": "2026-06",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Terminus health check (ping ฐานข้อมูลผ่าน Prisma)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Device",
+      "item": [
+        {
+          "name": "Create device",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"serial\": \"{{newDeviceSerial}}\",\n  \"ward\": \"ICU\",\n  \"staticName\": \"Fridge 1\",\n  \"name\": \"ตู้เย็น ICU 1\",\n  \"status\": true,\n  \"seq\": 1,\n  \"firmware\": \"1.0.0\",\n  \"remark\": \"\",\n  \"position\": \"\",\n  \"positionPic\": \"\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/devices",
+              "host": ["{{baseUrl}}"],
+              "path": ["devices"]
+            },
+            "description": "Body ตาม CreateDeviceDto — required: serial, ward, staticName, status, seq (int), firmware. Optional: name, remark, position, positionPic. ใช้ {{newDeviceSerial}} เพื่อเลี่ยง 500 Unique constraint failed หาก serial ซ้ำของเดิม"
+          }
+        },
+        {
+          "name": "List devices",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/devices",
+              "host": ["{{baseUrl}}"],
+              "path": ["devices"]
+            }
+          }
+        },
+        {
+          "name": "Get device by serial",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/devices/:serial",
+              "host": ["{{baseUrl}}"],
+              "path": ["devices", ":serial"],
+              "variable": [
+                { "key": "serial", "value": "{{serial}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Telemetry",
+      "item": [
+        {
+          "name": "Query telemetry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telemetry?serial={{serial}}&from=2026-07-01T00:00:00.000Z&to=2026-07-22T23:59:59.000Z&limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["telemetry"],
+              "query": [
+                { "key": "serial", "value": "{{serial}}" },
+                { "key": "from", "value": "2026-07-01T00:00:00.000Z" },
+                { "key": "to", "value": "2026-07-22T23:59:59.000Z" },
+                { "key": "limit", "value": "100" }
+              ]
+            },
+            "description": "Query ตาม QueryTelemetryDto — ทุก field เป็น optional: serial, from (ISO date), to (ISO date), limit (int 1-1000, default 100)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Logday",
+      "item": [
+        {
+          "name": "Get log-by-day summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/logday/:serial",
+              "host": ["{{baseUrl}}"],
+              "path": ["logday", ":serial"],
+              "variable": [
+                { "key": "serial", "value": "{{serial}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Graph",
+      "item": [
+        {
+          "name": "Get graph data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/graph/:serial",
+              "host": ["{{baseUrl}}"],
+              "path": ["graph", ":serial"],
+              "variable": [
+                { "key": "serial", "value": "{{serial}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notification",
+      "item": [
+        {
+          "name": "Create notification",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"serial\": \"{{serial}}\",\n  \"message\": \"Door open too long\",\n  \"detail\": \"Door1 has been open for more than 5 minutes\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications"]
+            },
+            "description": "Body ตาม CreateNotificationDto — required: serial, message. Optional: detail"
+          }
+        },
+        {
+          "name": "Get notifications by serial",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/:serial",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", ":serial"],
+              "variable": [
+                { "key": "serial", "value": "{{serial}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Backup",
+      "item": [
+        {
+          "name": "List archived months",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backup/months",
+              "host": ["{{baseUrl}}"],
+              "path": ["backup", "months"]
+            }
+          }
+        },
+        {
+          "name": "Export month",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backup/exports/:month",
+              "host": ["{{baseUrl}}"],
+              "path": ["backup", "exports", ":month"],
+              "variable": [
+                { "key": "month", "value": "{{month}}" }
+              ]
+            },
+            "description": "month format: YYYY-MM. หมายเหตุ: controller มี comment ว่าควรผูก JwtAuthGuard/AdminGuard แต่ยังไม่ implement จริง"
+          }
+        },
+        {
+          "name": "Restore month",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backup/restores/:month",
+              "host": ["{{baseUrl}}"],
+              "path": ["backup", "restores", ":month"],
+              "variable": [
+                { "key": "month", "value": "{{month}}" }
+              ]
+            },
+            "description": "month format: YYYY-MM. หมายเหตุ: ถ้า month ยังอยู่ใน retention window (เช่นเดือนปัจจุบันหรือใกล้เคียง) จะได้ 400 Bad Request เพราะ query ข้อมูลจากตาราง LogDays ได้โดยตรงอยู่แล้ว ไม่ต้อง restore — ให้ทดสอบด้วย month เก่ากว่า retention window แทน"
+          }
+        },
+        {
+          "name": "Delete restored month",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backup/restores/:month",
+              "host": ["{{baseUrl}}"],
+              "path": ["backup", "restores", ":month"],
+              "variable": [
+                { "key": "month", "value": "{{month}}" }
+              ]
+            },
+            "description": "month format: YYYY-MM. จะได้ 404 ถ้า month นั้นยังไม่ได้ถูก restore ไว้ก่อน (ต้องเรียก POST /backup/restores/:month ให้สำเร็จก่อน)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SSE Streams",
+      "item": [
+        {
+          "name": "Telemetry stream (SSE)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "text/event-stream" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telemetry/stream",
+              "host": ["{{baseUrl}}"],
+              "path": ["telemetry", "stream"]
+            },
+            "description": "Server-Sent Events stream ของ telemetry ใหม่ (heartbeat comment ทุก 30 วินาที). Postman จะไม่ render เป็น live stream เหมือน EventSource — ใช้เพื่อทดสอบว่า connection เปิดได้และ response header เป็น text/event-stream"
+          }
+        },
+        {
+          "name": "Notifications stream (SSE)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "text/event-stream" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/stream",
+              "host": ["{{baseUrl}}"],
+              "path": ["notifications", "stream"]
+            },
+            "description": "Server-Sent Events stream ของ notification ใหม่. Postman จะไม่ render เป็น live stream เหมือน EventSource"
+          }
+        }
+      ]
+    }
+  ]
+}

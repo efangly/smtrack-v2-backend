@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  // prisma/ และ prisma.config.ts เป็น tooling ที่รันจาก source ด้วย ts-node ไม่ต้อง build
+  // ถ้าไม่ exclude จะถูกดึงเข้า compilation ทำให้ rootDir เลื่อนขึ้นมาที่ project root
+  // แล้วผลลัพธ์ออกเป็น dist/src/main.js ซึ่ง start:prod (node dist/main) หาไม่เจอ
+  "exclude": ["node_modules", "test", "dist", "prisma", "prisma.config.ts", "**/*spec.ts"]
+}

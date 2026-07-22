@@ -1,0 +1,93 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { TelemetryService } from './telemetry.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { AppEvents } from '../common/events/app-events';
+import { CreateTelemetryDto } from './dto/create-telemetry.dto';
+import { MetricsService } from '../observability/metrics.service';
+import { createMetricsMock, observabilityTestProviders } from '../observability/testing';
+
+describe('TelemetryService', () => {
+  let service: TelemetryService;
+  let prisma: { logDays: { create: jest.Mock; findMany: jest.Mock } };
+  let emitter: { emit: jest.Mock };
+  let metrics: jest.Mocked<MetricsService>;
+
+  beforeEach(async () => {
+    prisma = { logDays: { create: jest.fn(), findMany: jest.fn() } };
+    emitter = { emit: jest.fn() };
+    metrics = createMetricsMock();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        TelemetryService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: EventEmitter2, useValue: emitter },
+        ...observabilityTestProviders(metrics),
+      ],
+    }).compile();
+
+    service = module.get(TelemetryService);
+  });
+
+  it('บันทึก log แล้ว emit TELEMETRY_CREATED', async () => {
+    const dto: CreateTelemetryDto = { serial: 'SN-1', temp: 5.5 };
+    const stored = { id: 'log-1', serial: 'SN-1', sendTime: new Date('2026-07-15T00:00:00Z') };
+    prisma.logDays.create.mockResolvedValue(stored);
+
+    const result = await service.ingest(dto);
+
+    expect(prisma.logDays.create).toHaveBeenCalledTimes(1);
+    const arg = prisma.logDays.create.mock.calls[0][0];
+    expect(arg.data.device).toEqual({ connect: { serial: 'SN-1' } });
+    expect(arg.data.temp).toBe(5.5);
+    expect(emitter.emit).toHaveBeenCalledWith(AppEvents.TELEMETRY_CREATED, stored);
+    expect(result).toBe(stored);
+  });
+
+  it('แปลง sendTime string เป็น Date', async () => {
+    prisma.logDays.create.mockResolvedValue({ id: 'x', serial: 'SN-1', sendTime: new Date() });
+    await service.ingest({ serial: 'SN-1', sendTime: '2026-07-15T10:00:00Z' });
+    const arg = prisma.logDays.create.mock.calls[0][0];
+    expect(arg.data.sendTime).toBeInstanceOf(Date);
+  });
+
+  it('find ประกอบ where จาก serial + ช่วงเวลา และจำกัด limit', async () => {
+    prisma.logDays.findMany.mockResolvedValue([]);
+    await service.find({
+      serial: 'SN-1',
+      from: '2026-07-01T00:00:00Z',
+      to: '2026-07-15T00:00:00Z',
+      limit: 50,
+    });
+
+    const arg = prisma.logDays.findMany.mock.calls[0][0];
+    expect(arg.where.serial).toBe('SN-1');
+    expect(arg.where.sendTime.gte).toBeInstanceOf(Date);
+    expect(arg.where.sendTime.lte).toBeInstanceOf(Date);
+    expect(arg.take).toBe(50);
+  });
+
+  it('find ใช้ default limit 100 เมื่อไม่ระบุ', async () => {
+    prisma.logDays.findMany.mockResolvedValue([]);
+    await service.find({});
+    expect(prisma.logDays.findMany.mock.calls[0][0].take).toBe(100);
+  });
+
+  it('ปฏิเสธเมื่อไม่มี serial ทั้งใน payload และ topic', async () => {
+    await expect(service.ingest({ temp: 4 })).rejects.toThrow(/serial is required/);
+    expect(prisma.logDays.create).not.toHaveBeenCalled();
+  });
+
+  it('ปฏิเสธเมื่อ serial เป็นช่องว่างล้วน', async () => {
+    await expect(service.ingest({ serial: '   ', temp: 4 })).rejects.toThrow(/serial is required/);
+    expect(prisma.logDays.create).not.toHaveBeenCalled();
+  });
+
+  it('บันทึกเวลาที่ใช้ ingest เป็น metric', async () => {
+    prisma.logDays.create.mockResolvedValue({ id: 'x', serial: 'SN-1', sendTime: new Date() });
+    await service.ingest({ serial: 'SN-1', temp: 4 });
+
+    expect(metrics.recordIngestDuration).toHaveBeenCalledWith(expect.any(Number), 'SN-1');
+  });
+});

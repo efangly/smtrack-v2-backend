@@ -1,0 +1,122 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  runtime      = "nodejs"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Devices {
+  id           String           @id @default(uuid()) @map("id")
+  serial       String           @unique @map("serial")
+  ward         String           @map("ward")
+  staticName   String           @map("static_name")
+  name         String?          @map("name")
+  status       Boolean          @map("status")
+  seq          Int              @map("seq")
+  firmware     String           @map("firmware")
+  remark       String?          @map("remark")
+  position     String?          @map("position")
+  positionPic  String?          @map("position_pic")
+  online       Boolean          @default(false) @map("online")
+  log          LogDays[]
+  notification Notifications[]
+  createAt     DateTime         @default(now()) @map("create_at")
+  updateAt     DateTime         @default(now()) @updatedAt @map("update_at")
+
+  @@map("devices")
+}
+
+// time-series log จากอุปกรณ์ — แปลงเป็น TimescaleDB hypertable บน sendTime หลัง migrate
+// ด้วย SELECT create_hypertable('"log_days"', 'send_time', migrate_data => true);
+model LogDays {
+  id              String   @id @default(uuid()) @map("id")
+  serial          String   @map("serial")
+  temp            Float    @default(0.00) @map("temp")
+  tempDisplay     Float    @default(0.00) @map("temp_display")
+  humidity        Float    @default(0.00) @map("humidity")
+  humidityDisplay Float    @default(0.00) @map("humidity_display")
+  sendTime        DateTime @default(now()) @map("send_time")
+  plug            Boolean  @default(false) @map("plug")
+  door1           Boolean  @default(false) @map("door1")
+  door2           Boolean  @default(false) @map("door2")
+  door3           Boolean  @default(false) @map("door3")
+  internet        Boolean  @default(false) @map("internet")
+  probe           String   @default("1") @map("probe")
+  battery         Int      @default(0) @map("battery")
+  tempInternal    Float?   @default(0.00) @map("temp_internal")
+  extMemory       Boolean  @default(false) @map("ext_memory")
+  device          Devices  @relation(fields: [serial], references: [serial])
+  createAt        DateTime @default(now()) @map("create_at")
+  updateAt        DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@index([serial, sendTime])
+  @@map("log_days")
+}
+
+// เป็น TimescaleDB hypertable บน createAt แล้ว (PK จริงใน DB เป็น composite (id, create_at)
+// แต่ schema ยังคง @id เดี่ยวไว้ตาม pattern เดียวกับ LogDays เพราะ id ยัง unique พอในทางปฏิบัติ)
+model Notifications {
+  id           String   @id @default(uuid()) @map("id")
+  serial       String   @map("serial")
+  message      String   @map("message")
+  detail       String   @map("detail")
+  status       Boolean  @default(false) @map("status")
+  deliveredSse Boolean  @default(false) @map("delivered_sse") // ส่งผ่าน SSE สำเร็จหรือยัง
+  deliveredFcm Boolean  @default(false) @map("delivered_fcm") // ส่งผ่าน FCM สำเร็จหรือยัง
+  device       Devices  @relation(fields: [serial], references: [serial])
+  createAt     DateTime @default(now()) @map("create_at")
+  updateAt     DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@index([serial, createAt])
+  @@map("notifications")
+}
+
+// ปลายทาง restore ของ LogDays เดือนที่ถูก archive ไป object storage แล้ว
+// ไม่มี relation ไปยัง Devices เพราะข้อมูลต้องอยู่ต่อได้แม้ device ถูกลบไปแล้ว
+model LogDayArchive {
+  id              String   @id @default(uuid()) @map("id")
+  serial          String   @map("serial")
+  temp            Float    @default(0.00) @map("temp")
+  tempDisplay     Float    @default(0.00) @map("temp_display")
+  humidity        Float    @default(0.00) @map("humidity")
+  humidityDisplay Float    @default(0.00) @map("humidity_display")
+  sendTime        DateTime @map("send_time")
+  plug            Boolean  @default(false) @map("plug")
+  door1           Boolean  @default(false) @map("door1")
+  door2           Boolean  @default(false) @map("door2")
+  door3           Boolean  @default(false) @map("door3")
+  internet        Boolean  @default(false) @map("internet")
+  probe           String   @default("1") @map("probe")
+  battery         Int      @default(0) @map("battery")
+  tempInternal    Float?   @default(0.00) @map("temp_internal")
+  extMemory       Boolean  @default(false) @map("ext_memory")
+  createAt        DateTime @default(now()) @map("create_at")
+  updateAt        DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@map("log_day_archive")
+}
+
+// audit ของการ export LogDays รายเดือนขึ้น object storage (กัน export ซ้ำ)
+model ArchiveExport {
+  month      DateTime @id @db.Date @map("month")
+  rowCount   BigInt   @map("row_count")
+  objectKey  String   @map("object_key")
+  sha256     String   @map("sha256")
+  exportedAt DateTime @default(now()) @map("exported_at")
+
+  @@map("archive_export")
+}
+
+// audit ของการ restore LogDayArchive กลับมาให้ query (กัน restore ซ้ำ / ใช้ทำ UI จัดการ)
+model ArchiveRestore {
+  month      DateTime @id @db.Date @map("month")
+  rowCount   BigInt   @map("row_count")
+  objectKey  String   @map("object_key")
+  restoredAt DateTime @default(now()) @map("restored_at")
+
+  @@map("archive_restore")
+}

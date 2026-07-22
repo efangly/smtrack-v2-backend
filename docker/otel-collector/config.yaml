@@ -1,0 +1,46 @@
+# OTel Collector — จุดรับ OTLP จาก app แล้วแยกส่ง trace ไป Tempo / metric ไป Prometheus
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # กัน collector กิน RAM จนโดน OOM kill
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  otlphttp/tempo:
+    endpoint: http://tempo:4318
+    tls:
+      insecure: true
+  # Prometheus เปิด --web.enable-otlp-receiver ไว้ รับ OTLP metric ตรงที่ path นี้
+  otlphttp/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    tls:
+      insecure: true
+  # ไว้ยืนยันด้วยตาว่ามีอะไรวิ่งเข้ามาจริง ดูผ่าน `docker compose logs otel-collector`
+  debug:
+    verbosity: normal
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/tempo, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/prometheus, debug]

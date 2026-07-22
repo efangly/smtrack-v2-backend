@@ -1,0 +1,57 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
+import { LoggerModule } from 'nestjs-pino';
+import configuration from './config/configuration';
+import { buildPinoOptions } from './observability/logger.config';
+import { ObservabilityModule } from './observability/observability.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { RedisModule } from './redis/redis.module';
+import { RabbitmqModule } from './rabbitmq/rabbitmq.module';
+import { SseModule } from './sse/sse.module';
+import { TelemetryModule } from './telemetry/telemetry.module';
+import { MqttModule } from './mqtt/mqtt.module';
+import { FcmModule } from './fcm/fcm.module';
+import { NotificationModule } from './notification/notification.module';
+import { DeviceModule } from './device/device.module';
+import { LogdayModule } from './logday/logday.module';
+import { GraphModule } from './graph/graph.module';
+import { BackupModule } from './backup/backup.module';
+import { HealthModule } from './health/health.module';
+import { ConsumerModule } from './consumer/consumer.module';
+import { CacheModule } from './common/cache/cache.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      load: [configuration],
+      cache: true,
+    }),
+    // observability ต้องมาก่อนโมดูลอื่น เพื่อให้ทุกโมดูลได้ logger/tracer ที่ตั้งค่าแล้ว
+    LoggerModule.forRoot(buildPinoOptions()),
+    ObservabilityModule,
+    EventEmitterModule.forRoot(),
+    ScheduleModule.forRoot(),
+    // infrastructure
+    PrismaModule,
+    RedisModule,
+    RabbitmqModule,
+    // core vertical slice
+    SseModule,
+    TelemetryModule,
+    MqttModule,
+    FcmModule,
+    NotificationModule,
+    DeviceModule,
+    // supporting modules
+    LogdayModule,
+    GraphModule,
+    BackupModule,
+    HealthModule,
+    ConsumerModule,
+    CacheModule,
+  ],
+})
+export class AppModule {}
