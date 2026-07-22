@@ -24,6 +24,7 @@ npm-debug.log*
 .env
 .env.local
 .env.*.local
+.env.observability
 
 # Firebase
 firebase-service-account.json
