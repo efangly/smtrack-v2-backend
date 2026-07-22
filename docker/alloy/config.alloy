@@ -1,0 +1,76 @@
+// Alloy — เก็บ stdout ของ container จาก Docker log driver แล้ว push เข้า Loki
+// (app พ่น JSON ออก stdout เมื่อ NODE_ENV=production ตาม logger.config.ts)
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+// เก็บเฉพาะ container ของ service `app` — ไม่ต้องดูด log ของ stack ตัวเองเข้าไปด้วย
+discovery.relabel "app" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "app"
+    action        = "keep"
+  }
+
+  // ตั้งชื่อให้ตรงกับ resource attribute service.name ที่ tracing.ts ส่งไป Tempo
+  // เพื่อให้ Grafana เชื่อม log ↔ trace ด้วย service เดียวกันได้
+  rule {
+    target_label = "service_name"
+    replacement  = "smtrack-backend"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "app" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.app.output
+  forward_to = [loki.process.pino.receiver]
+}
+
+loki.process "pino" {
+  // แกะ JSON ที่ pino พ่นออกมา
+  stage.json {
+    expressions = {
+      trace_id = "trace_id",
+      span_id  = "span_id",
+      level    = "level",
+    }
+  }
+
+  // trace_id/span_id เป็น high-cardinality — ต้องเก็บเป็น structured metadata
+  // ห้ามทำเป็น label ไม่งั้น index ของ Loki ระเบิด
+  // นี่คือฟิลด์ที่ derivedFields ใน Grafana ใช้ทำปุ่มกระโดดไป Tempo
+  stage.structured_metadata {
+    values = {
+      trace_id = "",
+      span_id  = "",
+    }
+  }
+
+  // pino ใช้ level เป็นตัวเลข (30=info, 40=warn, 50=error) แปลงให้ Grafana อ่านออก
+  stage.template {
+    source   = "detected_level"
+    template = "{{ if eq .level \"50\" }}error{{ else if eq .level \"40\" }}warn{{ else if eq .level \"20\" }}debug{{ else }}info{{ end }}"
+  }
+
+  stage.labels {
+    values = { detected_level = "" }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
