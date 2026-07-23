@@ -1,3 +1,4 @@
+import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class CreateDeviceDto {
@@ -17,9 +18,13 @@ export class CreateDeviceDto {
   @IsOptional()
   name?: string;
 
+  // multipart/form-data ส่งทุก field เป็น string เสมอ ต้อง coerce เป็น boolean ก่อน validate
+  @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
   status!: boolean;
 
+  // multipart/form-data ส่งทุก field เป็น string เสมอ ต้อง coerce เป็น number ก่อน validate
+  @Type(() => Number)
   @IsInt()
   seq!: number;
 
@@ -35,7 +40,5 @@ export class CreateDeviceDto {
   @IsOptional()
   position?: string;
 
-  @IsString()
-  @IsOptional()
-  positionPic?: string;
+  // ไม่รับจาก client — เซ็ตโดย DeviceService หลังอัปโหลดไฟล์ (field `positionPic` ใน multipart request) ขึ้น object storage สำเร็จ
 }
