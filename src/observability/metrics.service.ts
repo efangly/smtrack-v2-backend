@@ -16,6 +16,10 @@ export class MetricsService {
     description: 'จำนวน MQTT message ที่ consume/publish',
   });
 
+  private readonly rmqMessages: Counter = this.meter.createCounter('smtrack_rmq_messages_total', {
+    description: 'จำนวน RabbitMQ message ที่ consume แยกตาม queue',
+  });
+
   // ห้ามใส่หน่วยในชื่อ metric — OTel→Prometheus จะเติม suffix จาก `unit` ให้เอง
   // ("..._duration_ms" + unit ms จะกลายเป็น smtrack_telemetry_ingest_duration_ms_milliseconds)
   private readonly ingestDuration: Histogram = this.meter.createHistogram(
@@ -35,6 +39,10 @@ export class MetricsService {
 
   recordMqttMessage(topic: string, status: 'success' | 'error'): void {
     this.mqttMessages.add(1, { topic, status });
+  }
+
+  recordRmqMessage(queue: string, status: 'success' | 'error'): void {
+    this.rmqMessages.add(1, { queue, status });
   }
 
   recordIngestDuration(ms: number, serial: string): void {

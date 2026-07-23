@@ -234,6 +234,8 @@ MQTT_LOG_TOPIC=devices/+/log
 MQTT_NOTIFICATION_TOPIC_PREFIX=notification
 REDIS_URL=redis://localhost:6379
 RABBITMQ_URL=amqp://user:pass@localhost:5672
+RABBITMQ_DEVICE_ONLINE_QUEUE=device_online_queue
+RABBITMQ_LOG_QUEUE=log_queue
 JWT_SECRET=
 FIREBASE_PROJECT_ID=
 FIREBASE_CLIENT_EMAIL=
@@ -273,7 +275,7 @@ npm run format
 
 - อย่า commit ค่า MQTT credential หรือ database URL จริงลงไฟล์ ให้ใช้ `.env` และเพิ่มใน `.gitignore`
 - Payload จากอุปกรณ์ IoT เชื่อถือไม่ได้ 100% ต้อง validate/sanitize ทุกครั้งก่อนบันทึกลงฐานข้อมูล
-- ออกแบบ reconnect/retry logic ให้ MQTT client ให้ดี เพราะ connection กับ broker อาจหลุดได้บ่อยในระบบ IoT จริง — สำคัญเป็นพิเศษเพราะทั้ง log ingestion และ notification พึ่งพา MQTT เพียงช่องทางเดียว ไม่มี HTTP เป็นทางสำรอง
+- ออกแบบ reconnect/retry logic ให้ MQTT client ให้ดี เพราะ connection กับ broker อาจหลุดได้บ่อยในระบบ IoT จริง — log ingestion รองรับ 3 ช่องทางคือ MQTT (ทางหลัก), HTTP (`POST /logday` fallback), และ RabbitMQ consume (queue `log_queue`, สำหรับ gateway/service ต้นทางอื่น) ทั้ง 3 ทางเรียก `TelemetryService.ingest()` จุดเดียวกัน ไม่มี insert logic ซ้ำ
 - พิจารณา rate limiting หรือ batching การ insert หากอุปกรณ์ส่งข้อมูลความถี่สูงมาก เพื่อไม่ให้ TimescaleDB รับภาระเกิน (ใช้ chunk interval ของ hypertable ให้เหมาะสมกับ throughput)
 - SSE connection ค้างไว้นาน (long-lived HTTP connection) ต้องระวัง reverse proxy/load balancer timeout — ตั้งค่า `X-Accel-Buffering: no` (Nginx) และ heartbeat/keep-alive event เป็นระยะเพื่อกันหลุด
 - ตั้ง retention policy บน TimescaleDB hypertable ให้ชัดเจน (ร่วมกับโมดูล `backup`) เพื่อไม่ให้ดิสก์เต็มจากข้อมูล log ความถี่สูง

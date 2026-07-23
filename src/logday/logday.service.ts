@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { LogDays } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
+import { UpdateLogdayDto } from './dto/update-logday.dto';
 
 export interface DailyRollup {
   day: Date;
@@ -41,5 +43,17 @@ export class LogdayService {
         ORDER BY day DESC
       `,
     );
+  }
+
+  update(id: string, dto: UpdateLogdayDto): Promise<LogDays> {
+    const { sendTime, ...rest } = dto;
+    return this.prisma.logDays.update({
+      where: { id },
+      data: { ...rest, sendTime: sendTime ? new Date(sendTime) : undefined },
+    });
+  }
+
+  remove(id: string): Promise<LogDays> {
+    return this.prisma.logDays.delete({ where: { id } });
   }
 }

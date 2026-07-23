@@ -1,15 +1,25 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Notifications } from '../generated/prisma/client';
+import { Notifications, Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { MqttClientService } from '../mqtt/mqtt-client.service';
 import { SseService } from '../sse/sse.service';
 import { FcmService } from '../fcm/fcm.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
+import { UpdateNotificationDto } from './dto/update-notification.dto';
 import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
+import { JwtPayloadDto } from '../common/dto/payload.dto';
 
 const bySerialKey = (serial: string) => `notification:${serial}`;
+
+export interface NotificationDashboardCount {
+  temp: number;
+  door: number;
+  internet: number;
+  plug: number;
+  sdcard: number;
+}
 
 @Injectable()
 export class NotificationService {
@@ -120,6 +130,121 @@ export class NotificationService {
         take: 100,
       }),
     );
+  }
+
+  /** paginated/filtered list — role scoping ตาม ward เท่านั้น (hospital ตัดออกแล้วใน v2 schema) */
+  async findAll(
+    filter: string | undefined,
+    page: number,
+    perpage: number,
+    user: JwtPayloadDto,
+  ): Promise<Notifications[]> {
+    const { conditions, key } = this.findCondition(user);
+    const cacheKey = `${key}:${page}:${perpage}`;
+
+    let where = conditions;
+    if (filter) {
+      const contains = this.filterToMessageContains(filter);
+      where = { ...where, message: { contains } };
+      return this.prisma.notifications.findMany({
+        take: perpage,
+        skip: (page - 1) * perpage,
+        where,
+        orderBy: { createAt: 'desc' },
+      });
+    }
+
+    return this.redis.getOrSet(cacheKey, 15, () =>
+      this.prisma.notifications.findMany({
+        take: perpage,
+        skip: (page - 1) * perpage,
+        where,
+        orderBy: { createAt: 'desc' },
+      }),
+    );
+  }
+
+  async findCount(user: JwtPayloadDto): Promise<NotificationDashboardCount> {
+    const { conditions, key } = this.findCondition(user);
+    const notification = await this.redis.getOrSet(`count-${key}`, 30, () =>
+      this.prisma.notifications.findMany({ where: conditions, orderBy: { createAt: 'desc' } }),
+    );
+
+    const counts: NotificationDashboardCount = {
+      temp: 0,
+      door: 0,
+      internet: 0,
+      plug: 0,
+      sdcard: 0,
+    };
+    for (const n of notification) {
+      const msgType = n.message.split('/');
+      switch (msgType[0]) {
+        case 'SD':
+          if (msgType[1] === 'OFF') counts.sdcard++;
+          break;
+        case 'AC':
+          if (msgType[1] === 'OFF') counts.plug++;
+          break;
+        case 'INTERNET':
+          if (msgType[1] === 'OFF') counts.internet++;
+          break;
+        default:
+          if (msgType[1] === 'TEMP') {
+            if (msgType[2] === 'OVER' || msgType[2] === 'LOWER') counts.temp++;
+          } else if (msgType[2] === 'ON') {
+            counts.door++;
+          }
+      }
+    }
+    return counts;
+  }
+
+  update(id: string, dto: UpdateNotificationDto): Promise<Notifications> {
+    return this.prisma.notifications.update({ where: { id }, data: dto });
+  }
+
+  remove(id: string): Promise<Notifications> {
+    return this.prisma.notifications.delete({ where: { id } });
+  }
+
+  /**
+   * role-based scoping — เดิม (legacy) มี branch ตาม hospital ด้วย แต่ v2 ตัด field hospital
+   * ออกจาก schema แล้ว (migration remove_hospital_and_notification_tokens) จึง scope ได้แค่ ward
+   */
+  private findCondition(user: JwtPayloadDto): {
+    conditions: Prisma.NotificationsWhereInput | undefined;
+    key: string;
+  } {
+    switch (user.role) {
+      case 'USER':
+      case 'LEGACY_USER':
+        return {
+          conditions: { device: { ward: user.wardId } },
+          key: `notification:${user.wardId}`,
+        };
+      default:
+        return { conditions: undefined, key: 'notification' };
+    }
+  }
+
+  private filterToMessageContains(filter: string): string {
+    switch (filter) {
+      case 'door':
+        return 'DOOR';
+      case 'temp':
+        return 'TEMP';
+      case 'internet':
+        return 'INTERNET';
+      case 'plug':
+        return 'AC';
+      case 'sdcard':
+        return 'SD';
+      case 'report':
+        return 'REPORT';
+      default:
+        return filter;
+    }
   }
 
   private msg(err: unknown): string {

@@ -20,7 +20,10 @@ import { GraphModule } from './graph/graph.module';
 import { BackupModule } from './backup/backup.module';
 import { HealthModule } from './health/health.module';
 import { ConsumerModule } from './consumer/consumer.module';
+import { LogConsumerModule } from './consumer/log-consumer.module';
 import { CacheModule } from './common/cache/cache.module';
+import { AuthModule } from './auth/auth.module';
+import { MobileModule } from './mobile/mobile.module';
 
 @Module({
   imports: [
@@ -38,6 +41,7 @@ import { CacheModule } from './common/cache/cache.module';
     PrismaModule,
     RedisModule,
     RabbitmqModule,
+    AuthModule,
     // core vertical slice
     SseModule,
     TelemetryModule,
@@ -51,7 +55,9 @@ import { CacheModule } from './common/cache/cache.module';
     BackupModule,
     HealthModule,
     ConsumerModule,
+    LogConsumerModule,
     CacheModule,
+    MobileModule,
   ],
 })
 export class AppModule {}

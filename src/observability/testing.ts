@@ -9,6 +9,7 @@ import { MetricsService } from './metrics.service';
 export const createMetricsMock = (): jest.Mocked<MetricsService> =>
   ({
     recordMqttMessage: jest.fn(),
+    recordRmqMessage: jest.fn(),
     recordIngestDuration: jest.fn(),
     recordNotificationDelivery: jest.fn(),
     sseConnectionOpened: jest.fn(),

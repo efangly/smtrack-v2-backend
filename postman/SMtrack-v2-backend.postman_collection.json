@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "SMtrack v2 Backend",
-    "description": "REST API collection สำหรับ SMtrack v2 backend (NestJS, IoT telemetry/notification ผ่าน MQTT + TimescaleDB).\n\nหมายเหตุ: โค้ดปัจจุบันยังไม่มี auth guard ผูกใช้งานจริง (ไม่มี AuthGuard/passport-jwt ใน src/) ทุก endpoint จึงยังเปิดใช้งานได้โดยไม่ต้องใส่ token — แต่ collection นี้เตรียม Bearer token ไว้ล่วงหน้าที่ระดับ collection (ตัวแปร jwtToken) เผื่อไว้สำหรับตอนที่เปิดใช้ auth guard จาก auth service แยกในอนาคต\n\nไม่รวม MQTT/RabbitMQ @EventPattern handlers (mqtt.controller.ts, consumer.controller.ts) เพราะไม่ใช่ REST endpoint",
+    "description": "REST API collection สำหรับ SMtrack v2 backend (NestJS, IoT telemetry/notification ผ่าน MQTT + TimescaleDB).\n\nอัปเดตล่าสุด: เพิ่ม global prefix `/log`, ทุก response ห่อด้วย ResponseInterceptor รูปแบบ `{success, message, data, timestamp, statusCode}` (endpoint `/log/health` ยกเว้นเพราะ @SkipInterceptor), error response เป็น `{message, success:false, data:null, traceStack}` (traceStack โผล่เฉพาะ NODE_ENV=development), และ auth guard ถูกผูกใช้งานจริงแล้ว:\n- **JwtAuthGuard** (`Authorization: Bearer {{jwtToken}}`) — JWT verify ด้วย JWT_SECRET, payload ต้องมี `role` เป็นหนึ่งใน SUPER/SERVICE/ADMIN/USER/LEGACY_ADMIN/LEGACY_USER/GUEST\n- **DeviceJwtAuthGuard** (`Authorization: Bearer {{deviceJwtToken}}`) — JWT verify ด้วย DEVICE_SECRET, payload ต้องมี `sn` (serial ของอุปกรณ์ — controller จะ overwrite serial ใน body ด้วยค่านี้เสมอ ไม่เชื่อ serial ที่ client ส่งมา)\n- **RolesGuard** (`@Roles(...)`) — ต่อจาก JwtAuthGuard อีกชั้น เช็ค `role` ใน payload ตรงกับที่ endpoint กำหนด ไม่ตรงจะได้ 403\n\nสร้าง token ทดสอบได้ที่ jwt.io: เลือก algorithm HS256, ใส่ secret เป็นค่า JWT_SECRET/DEVICE_SECRET จาก .env, payload ตามที่ endpoint นั้นต้องการ (ดู description แต่ละ request)\n\nไม่รวม MQTT/RabbitMQ @EventPattern handlers (mqtt.controller.ts, consumer.controller.ts) เพราะไม่ใช่ REST endpoint",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -24,7 +24,13 @@
       "key": "jwtToken",
       "value": "",
       "type": "string",
-      "description": "Bearer token ที่ออกโดย auth service แยกต่างหาก — ยังไม่ถูก enforce โดย backend นี้ในปัจจุบัน"
+      "description": "User JWT (verify ด้วย JWT_SECRET) — payload ต้องมี {id, name, role, wardId}. role ต้องเป็นหนึ่งใน SUPER/SERVICE/ADMIN/USER/LEGACY_ADMIN/LEGACY_USER/GUEST"
+    },
+    {
+      "key": "deviceJwtToken",
+      "value": "",
+      "type": "string",
+      "description": "Device JWT (verify ด้วย DEVICE_SECRET) — payload ต้องมี {sn: <serial>}. ใช้กับ endpoint ที่อุปกรณ์เป็นคนยิงเอง (POST /logday, POST /notifications)"
     },
     {
       "key": "serial",
@@ -36,7 +42,25 @@
       "key": "newDeviceSerial",
       "value": "TEST-POSTMAN-001",
       "type": "string",
-      "description": "serial ใหม่ที่ยังไม่มีในระบบ ใช้กับ POST /devices เท่านั้น (POST ด้วย serial ที่ซ้ำจะได้ 500 Unique constraint failed)"
+      "description": "serial ใหม่ที่ยังไม่มีในระบบ ใช้กับ POST /devices เท่านั้น (POST ด้วย serial ที่ซ้ำจะได้ 409 Conflict)"
+    },
+    {
+      "key": "logId",
+      "value": "",
+      "type": "string",
+      "description": "id ของแถวใน LogDays ที่มีอยู่แล้ว ใช้กับ PUT/DELETE /logday/:id"
+    },
+    {
+      "key": "notificationId",
+      "value": "",
+      "type": "string",
+      "description": "id ของ notification ที่มีอยู่แล้ว ใช้กับ PUT/DELETE /notifications/:id"
+    },
+    {
+      "key": "ward",
+      "value": "ICU",
+      "type": "string",
+      "description": "ward ที่มีอยู่แล้ว ใช้กับ GET /mobile/:ward"
     },
     {
       "key": "month",
@@ -51,14 +75,15 @@
         {
           "name": "Health check",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/health",
+              "raw": "{{baseUrl}}/log/health",
               "host": ["{{baseUrl}}"],
-              "path": ["health"]
+              "path": ["log", "health"]
             },
-            "description": "Terminus health check (ping ฐานข้อมูลผ่าน Prisma)"
+            "description": "Terminus health check (ping ฐานข้อมูลผ่าน Prisma). ไม่ guard และไม่ถูกห่อด้วย ResponseInterceptor (@SkipInterceptor) — response เป็นรูปแบบ Terminus ตรงๆ"
           }
         }
       ]
@@ -69,6 +94,7 @@
         {
           "name": "Create device",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "POST",
             "header": [
               { "key": "Content-Type", "value": "application/json" }
@@ -79,38 +105,64 @@
               "options": { "raw": { "language": "json" } }
             },
             "url": {
-              "raw": "{{baseUrl}}/devices",
+              "raw": "{{baseUrl}}/log/devices",
               "host": ["{{baseUrl}}"],
-              "path": ["devices"]
+              "path": ["log", "devices"]
             },
-            "description": "Body ตาม CreateDeviceDto — required: serial, ward, staticName, status, seq (int), firmware. Optional: name, remark, position, positionPic. ใช้ {{newDeviceSerial}} เพื่อเลี่ยง 500 Unique constraint failed หาก serial ซ้ำของเดิม"
+            "description": "Body ตาม CreateDeviceDto — required: serial, ward, staticName, status, seq (int), firmware. Optional: name, remark, position, positionPic. ใช้ {{newDeviceSerial}} เพื่อเลี่ยง 409 Conflict หาก serial ซ้ำของเดิม\n\nไม่ guard (คงพฤติกรรมเดิมจาก smtrack-log — DeviceController ไม่มี guard เลยแม้แต่ตัวเดียว)"
           }
         },
         {
           "name": "List devices",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/devices",
+              "raw": "{{baseUrl}}/log/devices",
               "host": ["{{baseUrl}}"],
-              "path": ["devices"]
+              "path": ["log", "devices"]
             }
           }
         },
         {
           "name": "Get device by serial",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/devices/:serial",
+              "raw": "{{baseUrl}}/log/devices/:serial",
               "host": ["{{baseUrl}}"],
-              "path": ["devices", ":serial"],
+              "path": ["log", "devices", ":serial"],
               "variable": [
                 { "key": "serial", "value": "{{serial}}" }
               ]
             }
+          }
+        },
+        {
+          "name": "Update device",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"ตู้เย็น ICU 1 (แก้ไข)\",\n  \"remark\": \"updated via Postman\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/log/devices/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "devices", ":id"],
+              "variable": [
+                { "key": "id", "value": "{{serial}}" }
+              ]
+            },
+            "description": ":id คือ serial ของ device (path param ชื่อ id แต่ query ด้วย serial ตามธรรมเนียมเดิมของ smtrack-log). Body ตาม UpdateDeviceDto — ทุก field เป็น optional (partial ของ CreateDeviceDto). ไม่ guard เหมือน endpoint อื่นใน DeviceController"
           }
         }
       ]
@@ -121,12 +173,13 @@
         {
           "name": "Query telemetry",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/telemetry?serial={{serial}}&from=2026-07-01T00:00:00.000Z&to=2026-07-22T23:59:59.000Z&limit=100",
+              "raw": "{{baseUrl}}/log/telemetry?serial={{serial}}&from=2026-07-01T00:00:00.000Z&to=2026-07-22T23:59:59.000Z&limit=100",
               "host": ["{{baseUrl}}"],
-              "path": ["telemetry"],
+              "path": ["log", "telemetry"],
               "query": [
                 { "key": "serial", "value": "{{serial}}" },
                 { "key": "from", "value": "2026-07-01T00:00:00.000Z" },
@@ -134,7 +187,7 @@
                 { "key": "limit", "value": "100" }
               ]
             },
-            "description": "Query ตาม QueryTelemetryDto — ทุก field เป็น optional: serial, from (ISO date), to (ISO date), limit (int 1-1000, default 100)"
+            "description": "Query ตาม QueryTelemetryDto — ทุก field เป็น optional: serial, from (ISO date), to (ISO date), limit (int 1-1000, default 100). ไม่ guard ในรอบนี้"
           }
         }
       ]
@@ -145,16 +198,81 @@
         {
           "name": "Get log-by-day summary",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/logday/:serial",
+              "raw": "{{baseUrl}}/log/logday/:serial",
               "host": ["{{baseUrl}}"],
-              "path": ["logday", ":serial"],
+              "path": ["log", "logday", ":serial"],
               "variable": [
                 { "key": "serial", "value": "{{serial}}" }
               ]
-            }
+            },
+            "description": "สรุป rollup รายวัน (TimescaleDB time_bucket) ไม่ guard — คนละ endpoint กับ GET /logday/:id (ดึง log entry เดี่ยวด้วย id ยังไม่มี endpoint แยกในรอบนี้)"
+          }
+        },
+        {
+          "name": "Create log (device REST fallback)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{deviceJwtToken}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"temp\": 4.5,\n  \"tempDisplay\": 4.5,\n  \"humidity\": 55,\n  \"humidityDisplay\": 55,\n  \"plug\": true,\n  \"door1\": false,\n  \"door2\": false,\n  \"door3\": false,\n  \"internet\": true,\n  \"probe\": \"1\",\n  \"battery\": 100,\n  \"tempInternal\": 4.2,\n  \"extMemory\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/log/logday",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "logday"]
+            },
+            "description": "REST fallback สำหรับ ingest log — ทางหลักคือ MQTT (devices/{serial}/log), endpoint นี้เรียก TelemetryService.ingest() ตัวเดียวกัน ไม่ใช่ insert logic แยก\n\nต้องใช้ Device JWT ({{deviceJwtToken}}, payload {sn: serial}) — serial ในผลลัพธ์จะถูก overwrite จาก token เสมอ ไม่สนใจ serial ที่ส่งมาใน body (ถ้ามี)\n\nBody รับได้ทั้ง object เดี่ยว (ตามตัวอย่าง) หรือ array ของ object เดียวกัน (ingest หลายรายการพร้อมกัน) — ทุก field เป็น optional ตาม CreateTelemetryDto"
+          }
+        },
+        {
+          "name": "Update log entry",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"temp\": 5.0,\n  \"remark\": \"corrected reading\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/log/logday/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "logday", ":id"],
+              "variable": [
+                { "key": "id", "value": "{{logId}}" }
+              ]
+            },
+            "description": "แก้ไข log entry เดี่ยวด้วย id (ไม่ใช่ serial). Body เป็น partial ของ CreateTelemetryDto\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็น SUPER หรือ SERVICE เท่านั้น (RolesGuard) — role อื่นจะได้ 403"
+          }
+        },
+        {
+          "name": "Delete log entry",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/log/logday/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "logday", ":id"],
+              "variable": [
+                { "key": "id", "value": "{{logId}}" }
+              ]
+            },
+            "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็น SUPER หรือ SERVICE เท่านั้น (RolesGuard) — role อื่นจะได้ 403"
           }
         }
       ]
@@ -168,13 +286,14 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/graph/:serial",
+              "raw": "{{baseUrl}}/log/graph/:serial",
               "host": ["{{baseUrl}}"],
-              "path": ["graph", ":serial"],
+              "path": ["log", "graph", ":serial"],
               "variable": [
                 { "key": "serial", "value": "{{serial}}" }
               ]
-            }
+            },
+            "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — GraphController guard ทั้ง controller ด้วย JwtAuthGuard (ไม่จำกัด role)"
           }
         }
       ]
@@ -183,23 +302,58 @@
       "name": "Notification",
       "item": [
         {
-          "name": "Create notification",
+          "name": "Create notification (device)",
           "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{deviceJwtToken}}", "type": "string" }]
+            },
             "method": "POST",
             "header": [
               { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"serial\": \"{{serial}}\",\n  \"message\": \"Door open too long\",\n  \"detail\": \"Door1 has been open for more than 5 minutes\"\n}",
+              "raw": "{\n  \"serial\": \"{{serial}}\",\n  \"message\": \"DOOR/DOOR1/ON/5\",\n  \"detail\": \"Door open too long\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
-              "raw": "{{baseUrl}}/notifications",
+              "raw": "{{baseUrl}}/log/notifications",
               "host": ["{{baseUrl}}"],
-              "path": ["notifications"]
+              "path": ["log", "notifications"]
             },
-            "description": "Body ตาม CreateNotificationDto — required: serial, message. Optional: detail"
+            "description": "Body ตาม CreateNotificationDto — required: serial, message. Optional: detail\n\nต้องใช้ Device JWT ({{deviceJwtToken}}, payload {sn: serial}) — serial ใน body จะถูก overwrite จาก token เสมอ"
+          }
+        },
+        {
+          "name": "List notifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/log/notifications?filter=door&page=1&perpage=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "notifications"],
+              "query": [
+                { "key": "filter", "value": "door", "description": "optional: door | temp | internet | plug | sdcard | report" },
+                { "key": "page", "value": "1" },
+                { "key": "perpage", "value": "10" }
+              ]
+            },
+            "description": "Paginated/filtered list — ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection)\n\nScope ตาม role ใน payload: USER/LEGACY_USER เห็นเฉพาะ notification ของ device ใน ward เดียวกัน (payload.wardId), role อื่นเห็นทั้งหมด (หมายเหตุ: v2 ตัด field hospital ออกจาก schema แล้ว ต่างจาก legacy ที่เคย scope ตาม hospital ด้วยสำหรับ ADMIN/SERVICE/LEGACY_ADMIN)"
+          }
+        },
+        {
+          "name": "Dashboard count",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/log/notifications/dashboard/count",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "notifications", "dashboard", "count"]
+            },
+            "description": "นับจำนวน notification แยกตามประเภท {temp, door, internet, plug, sdcard} — ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection), scope ตาม role เหมือน List notifications"
           }
         },
         {
@@ -208,13 +362,87 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/notifications/:serial",
+              "raw": "{{baseUrl}}/log/notifications/:serial",
               "host": ["{{baseUrl}}"],
-              "path": ["notifications", ":serial"],
+              "path": ["log", "notifications", ":serial"],
               "variable": [
                 { "key": "serial", "value": "{{serial}}" }
               ]
-            }
+            },
+            "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection)"
+          }
+        },
+        {
+          "name": "Update notification",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/log/notifications/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "notifications", ":id"],
+              "variable": [
+                { "key": "id", "value": "{{notificationId}}" }
+              ]
+            },
+            "description": "Body เป็น partial ของ CreateNotificationDto — ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็น SUPER หรือ SERVICE เท่านั้น (RolesGuard)"
+          }
+        },
+        {
+          "name": "Delete notification",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/log/notifications/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "notifications", ":id"],
+              "variable": [
+                { "key": "id", "value": "{{notificationId}}" }
+              ]
+            },
+            "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็น SUPER หรือ SERVICE เท่านั้น (RolesGuard)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Mobile",
+      "item": [
+        {
+          "name": "My notifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/log/mobile",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "mobile"]
+            },
+            "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — MobileController guard ทั้ง controller ด้วย JwtAuthGuard\n\nScope ตาม role: USER/GUEST/LEGACY_USER เห็นเฉพาะ ward ตัวเอง (payload.wardId), role อื่นเห็นทั้งหมด"
+          }
+        },
+        {
+          "name": "Devices by ward",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/log/mobile/:ward",
+              "host": ["{{baseUrl}}"],
+              "path": ["log", "mobile", ":ward"],
+              "variable": [
+                { "key": "ward", "value": "{{ward}}" }
+              ]
+            },
+            "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection). คืนรายการ device ใน ward พร้อม log ล่าสุด 1 รายการ และ notification ทั้งหมดของแต่ละ device"
           }
         }
       ]
@@ -225,40 +453,43 @@
         {
           "name": "List archived months",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/backup/months",
+              "raw": "{{baseUrl}}/log/backup/months",
               "host": ["{{baseUrl}}"],
-              "path": ["backup", "months"]
+              "path": ["log", "backup", "months"]
             }
           }
         },
         {
           "name": "Export month",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/backup/exports/:month",
+              "raw": "{{baseUrl}}/log/backup/exports/:month",
               "host": ["{{baseUrl}}"],
-              "path": ["backup", "exports", ":month"],
+              "path": ["log", "backup", "exports", ":month"],
               "variable": [
                 { "key": "month", "value": "{{month}}" }
               ]
             },
-            "description": "month format: YYYY-MM. หมายเหตุ: controller มี comment ว่าควรผูก JwtAuthGuard/AdminGuard แต่ยังไม่ implement จริง"
+            "description": "month format: YYYY-MM. หมายเหตุ: controller มี comment ว่าควรผูก JwtAuthGuard/AdminGuard แต่ยังไม่ implement จริง — backup module อยู่นอกขอบเขตของรอบ auth-porting นี้ (design ต่างจาก legacy โดยพื้นฐาน ใช้ TimescaleDB/S3 แทน InfluxDB)"
           }
         },
         {
           "name": "Restore month",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/backup/restores/:month",
+              "raw": "{{baseUrl}}/log/backup/restores/:month",
               "host": ["{{baseUrl}}"],
-              "path": ["backup", "restores", ":month"],
+              "path": ["log", "backup", "restores", ":month"],
               "variable": [
                 { "key": "month", "value": "{{month}}" }
               ]
@@ -269,12 +500,13 @@
         {
           "name": "Delete restored month",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "DELETE",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/backup/restores/:month",
+              "raw": "{{baseUrl}}/log/backup/restores/:month",
               "host": ["{{baseUrl}}"],
-              "path": ["backup", "restores", ":month"],
+              "path": ["log", "backup", "restores", ":month"],
               "variable": [
                 { "key": "month", "value": "{{month}}" }
               ]
@@ -290,31 +522,33 @@
         {
           "name": "Telemetry stream (SSE)",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [
               { "key": "Accept", "value": "text/event-stream" }
             ],
             "url": {
-              "raw": "{{baseUrl}}/telemetry/stream",
+              "raw": "{{baseUrl}}/log/telemetry/stream",
               "host": ["{{baseUrl}}"],
-              "path": ["telemetry", "stream"]
+              "path": ["log", "telemetry", "stream"]
             },
-            "description": "Server-Sent Events stream ของ telemetry ใหม่ (heartbeat comment ทุก 30 วินาที). Postman จะไม่ render เป็น live stream เหมือน EventSource — ใช้เพื่อทดสอบว่า connection เปิดได้และ response header เป็น text/event-stream"
+            "description": "Server-Sent Events stream ของ telemetry ใหม่ (heartbeat comment ทุก 30 วินาที). Postman จะไม่ render เป็น live stream เหมือน EventSource — ใช้เพื่อทดสอบว่า connection เปิดได้และ response header เป็น text/event-stream. ไม่ guard ในรอบนี้"
           }
         },
         {
           "name": "Notifications stream (SSE)",
           "request": {
+            "auth": { "type": "noauth" },
             "method": "GET",
             "header": [
               { "key": "Accept", "value": "text/event-stream" }
             ],
             "url": {
-              "raw": "{{baseUrl}}/notifications/stream",
+              "raw": "{{baseUrl}}/log/notifications/stream",
               "host": ["{{baseUrl}}"],
-              "path": ["notifications", "stream"]
+              "path": ["log", "notifications", "stream"]
             },
-            "description": "Server-Sent Events stream ของ notification ใหม่. Postman จะไม่ render เป็น live stream เหมือน EventSource"
+            "description": "Server-Sent Events stream ของ notification ใหม่. Postman จะไม่ render เป็น live stream เหมือน EventSource. ไม่ guard ในรอบนี้"
           }
         }
       ]

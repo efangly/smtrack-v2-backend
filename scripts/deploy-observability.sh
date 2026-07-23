@@ -52,6 +52,10 @@ compose pull
 step "2. docker compose up -d"
 compose up -d
 
+# object-storage-init เป็น one-shot job (สร้าง bucket) — เอา container ที่ exit แล้วออก
+# ไม่ให้ค้างอยู่ใน `docker ps -a` เหมือนใช้ `docker run --rm`
+compose rm -f object-storage-init >/dev/null 2>&1 || true
+
 # ── 3. healthcheck ───────────────────────────────────────────────────────────
 
 step "3. รอ service พร้อมใช้งาน"
@@ -72,7 +76,6 @@ wait_http "Prometheus" prometheus "http://localhost:9090/-/healthy"
 wait_http "Loki" loki "http://localhost:3100/ready"
 wait_http "Tempo" tempo "http://localhost:3200/ready"
 
-# Grafana bind เฉพาะ 127.0.0.1 บน host จึงเช็คจาก host ได้ตรง ๆ
 if curl -fsS "http://127.0.0.1:3001/api/health" >/dev/null 2>&1; then
   ok "Grafana พร้อมใช้งาน"
 else
@@ -86,7 +89,7 @@ printf '  PASS: \033[32m%d\033[0m   FAIL: \033[31m%d\033[0m\n\n' "$PASS" "$FAIL"
 
 if [[ "$FAIL" -eq 0 ]]; then
   cat <<'EOF'
-Grafana: http://127.0.0.1:3001 (เข้าผ่าน reverse proxy/SSH tunnel ที่มีอยู่บน dev server)
+Grafana: http://<dev-server-ip>:3001
 
 ขั้นต่อไป: ตั้ง OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 ใน env ของ service
 `app` (compose หลักที่รันอยู่แล้ว) แล้ว restart app เพื่อให้ trace/metric เริ่มไหลเข้า

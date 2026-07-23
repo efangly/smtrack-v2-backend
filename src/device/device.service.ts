@@ -3,6 +3,7 @@ import { Devices } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { CreateDeviceDto } from './dto/create-device.dto';
+import { UpdateDeviceDto } from './dto/update-device.dto';
 
 const ALL_KEY = 'device:all';
 const oneKey = (serial: string) => `device:${serial}`;
@@ -37,6 +38,13 @@ export class DeviceService {
   /** อัปเดตสถานะ online/offline (เรียกจาก status topic handler / heartbeat) */
   async setOnline(serial: string, online: boolean): Promise<Devices> {
     const device = await this.prisma.devices.update({ where: { serial }, data: { online } });
+    await this.redis.del(oneKey(serial));
+    await this.redis.del(ALL_KEY);
+    return device;
+  }
+
+  async update(serial: string, dto: UpdateDeviceDto): Promise<Devices> {
+    const device = await this.prisma.devices.update({ where: { serial }, data: dto });
     await this.redis.del(oneKey(serial));
     await this.redis.del(ALL_KEY);
     return device;
