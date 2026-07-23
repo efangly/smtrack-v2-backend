@@ -34,6 +34,16 @@ export interface AppConfig {
       region: string;
     };
   };
+  device: {
+    s3: {
+      endpoint?: string;
+      accessKey: string;
+      secretKey: string;
+      bucket: string;
+      forcePathStyle: boolean;
+      region: string;
+    };
+  };
   observability: {
     serviceName: string;
     serviceVersion: string;
@@ -82,6 +92,21 @@ export default (): AppConfig => ({
       bucket: process.env.ARCHIVE_S3_BUCKET ?? 'smtrack-log-archive',
       forcePathStyle: process.env.ARCHIVE_S3_FORCE_PATH_STYLE === 'true',
       region: process.env.ARCHIVE_S3_REGION ?? 'us-east-1',
+    },
+  },
+  // ถ้า MinIO/S3 เป็นตัวเดียวกับ archive (ต่างกันแค่ bucket) ไม่ต้องตั้ง DEVICE_S3_ENDPOINT/ACCESS_KEY/SECRET_KEY/REGION/FORCE_PATH_STYLE ซ้ำ
+  // — จะ fallback ไปใช้ค่า ARCHIVE_S3_* ให้อัตโนมัติ ตั้งเฉพาะ DEVICE_S3_BUCKET ที่ต้องต่างกันจริง ๆ
+  device: {
+    s3: {
+      endpoint: process.env.DEVICE_S3_ENDPOINT || process.env.ARCHIVE_S3_ENDPOINT || undefined,
+      accessKey: process.env.DEVICE_S3_ACCESS_KEY || process.env.ARCHIVE_S3_ACCESS_KEY || '',
+      secretKey: process.env.DEVICE_S3_SECRET_KEY || process.env.ARCHIVE_S3_SECRET_KEY || '',
+      bucket: process.env.DEVICE_S3_BUCKET ?? 'smtrack-device-images',
+      forcePathStyle:
+        process.env.DEVICE_S3_FORCE_PATH_STYLE != null
+          ? process.env.DEVICE_S3_FORCE_PATH_STYLE === 'true'
+          : process.env.ARCHIVE_S3_FORCE_PATH_STYLE === 'true',
+      region: process.env.DEVICE_S3_REGION || process.env.ARCHIVE_S3_REGION || 'us-east-1',
     },
   },
   // หมายเหตุ: tracing.ts รันก่อน Nest bootstrap จึงอ่าน process.env ตรง ไม่ผ่าน ConfigService
