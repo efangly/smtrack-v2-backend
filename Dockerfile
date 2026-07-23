@@ -1,6 +1,6 @@
+FROM --platform=linux/amd64 node:24-alpine AS base
 
-# ติดตั้ง dependency ทั้งหมด (รวม devDeps) ไว้ใช้ทั้ง build และ stage migrate
-FROM node:24-alpine AS deps
+FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -25,7 +25,7 @@ RUN DATABASE_URL=postgresql://build:build@localhost:5432/build \
 FROM builder AS migrate
 
 # ── runner ────────────────────────────────────────────────────────────────────
-FROM node:24-alpine AS runner
+FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
@@ -36,10 +36,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 # nest build คอมไพล์ src/generated/prisma ไปเป็น dist/generated/prisma ให้แล้ว
 COPY --from=builder /app/dist ./dist
 
-# curl ไว้ให้ healthcheck ใน compose ใช้
 RUN apk add --no-cache curl \
   && addgroup -S nodejs && adduser -S nestjs -G nodejs \
   && chown -R nestjs:nodejs /app
+
 USER nestjs
 
 EXPOSE 3000

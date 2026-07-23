@@ -1,4 +1,5 @@
 import { Controller, Delete, Get, Param, Post } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { ArchiveExportService } from './archive-export.service';
 import { ArchiveRestoreService } from './archive-restore.service';
 import { MonthString } from './archive.util';
@@ -7,6 +8,7 @@ import { MonthString } from './archive.util';
  * endpoint สำหรับหน้า admin บน frontend
  * ควรครอบด้วย auth guard ของระบบ (เช่น @UseGuards(JwtAuthGuard, AdminGuard))
  */
+@ApiTags('backup')
 @Controller('backup')
 export class ArchiveController {
   constructor(

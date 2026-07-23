@@ -12,7 +12,12 @@ export interface AppConfig {
   };
   redisUrl: string;
   rabbitmqUrl: string;
+  rabbitmq: {
+    deviceOnlineQueue: string;
+    logQueue: string;
+  };
   jwtSecret: string;
+  deviceSecret: string;
   firebase: {
     projectId: string;
     clientEmail: string;
@@ -56,7 +61,12 @@ export default (): AppConfig => ({
   },
   redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
   rabbitmqUrl: process.env.RABBITMQ_URL ?? 'amqp://localhost:5672',
+  rabbitmq: {
+    deviceOnlineQueue: process.env.RABBITMQ_DEVICE_ONLINE_QUEUE ?? 'device_online_queue',
+    logQueue: process.env.RABBITMQ_LOG_QUEUE ?? 'log_queue',
+  },
   jwtSecret: process.env.JWT_SECRET ?? '',
+  deviceSecret: process.env.DEVICE_SECRET ?? '',
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID ?? '',
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? '',

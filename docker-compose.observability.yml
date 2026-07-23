@@ -9,7 +9,7 @@
 # (อ้างอิงกันด้วยชื่อ container ตรง ๆ เช่น http://tempo:4318 — ทำงานได้เพราะทุก service
 # อยู่บน network เดียวกับ mosquitto/minio/app)
 
-name: smtrack-observability
+name: otel
 
 networks:
   default:
@@ -117,8 +117,9 @@ services:
     volumes:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana
-    # bind localhost เท่านั้น — เข้าใช้งานผ่าน reverse proxy/SSH tunnel ที่มีอยู่แล้วบน dev server
-    ports: ['127.0.0.1:3001:3000']
+    # 192.168.0.207 เป็น private LAN ไม่ใช่ internet-facing จึงเปิดรับได้ทุก interface
+    # (auth ยังคงเปิดอยู่ — ปิด anonymous admin, ต้อง login ด้วย GF_SECURITY_ADMIN_PASSWORD เสมอ)
+    ports: ['3001:3000']
     depends_on: [tempo, loki, prometheus]
     restart: unless-stopped
 

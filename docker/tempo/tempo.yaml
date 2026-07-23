@@ -1,5 +1,7 @@
-# Tempo แบบ single-binary + S3 (MinIO) storage — ${...} ถูก expand จาก env ตอน start
+# Tempo แบบ single-binary + S3 (MinIO) storage — ตัวแปรด้านล่างถูก expand จาก env ตอน start
 # ด้วย flag -config.expand-env=true (ดู docker-compose.observability.yml)
+# หมายเหตุ: ห้ามเขียนสัญลักษณ์ดอลลาร์ลอย ๆ ในไฟล์นี้ (รวมถึงใน comment) เพราะตัว
+# expand-env parse ทั้งไฟล์แบบ strict ขึ้นต้นด้วยดอลลาร์ผิด syntax = crash ทั้งไฟล์
 server:
   http_listen_port: 3200
 
@@ -27,11 +29,12 @@ storage:
     wal:
       path: /var/tempo/wal
     s3:
-      bucket: ${TEMPO_S3_BUCKET}
-      endpoint: ${MINIO_ENDPOINT}
-      access_key: ${ARCHIVE_S3_ACCESS_KEY}
-      secret_key: ${ARCHIVE_S3_SECRET_KEY}
-      region: ${ARCHIVE_S3_REGION}
+      # quote ทุกตัว — ค่า secret อาจขึ้นต้นด้วยอักขระที่ YAML สงวนไว้ (@, `) ถ้าไม่ quote จะ parse error
+      bucket: "${TEMPO_S3_BUCKET}"
+      endpoint: "${MINIO_ENDPOINT}"
+      access_key: "${ARCHIVE_S3_ACCESS_KEY}"
+      secret_key: "${ARCHIVE_S3_SECRET_KEY}"
+      region: "${ARCHIVE_S3_REGION}"
       forcepathstyle: true
       insecure: true
 
