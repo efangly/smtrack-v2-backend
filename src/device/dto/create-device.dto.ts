@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsDate, IsInt, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class CreateDeviceDto {
   @IsString()
@@ -40,5 +40,22 @@ export class CreateDeviceDto {
   @IsOptional()
   position?: string;
 
+  @IsString()
+  @IsOptional()
+  location?: string;
+
+  @IsString()
+  @IsOptional()
+  tag?: string;
+
+  // multipart/form-data ส่งทุก field เป็น string เสมอ ต้อง coerce เป็น Date ก่อน validate
+  @Transform(({ value }) => (value ? new Date(value as string) : undefined))
+  @IsDate()
+  @IsOptional()
+  installDate?: Date;
+
   // ไม่รับจาก client — เซ็ตโดย DeviceService หลังอัปโหลดไฟล์ (field `positionPic` ใน multipart request) ขึ้น object storage สำเร็จ
+
+  // ไม่รับ `token` จาก client — controller นี้ไม่มี guard (ดูคอมเมนต์ใน device.controller.ts)
+  // ถ้ารับจาก body จะเท่ากับเปิดให้ใครก็ได้เซ็ต credential ของอุปกรณ์ผ่าน POST /devices แบบไม่ต้อง auth
 }

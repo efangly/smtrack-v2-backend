@@ -5,6 +5,7 @@ import { RedisService } from '../redis/redis.service';
 import { MqttClientService } from '../mqtt/mqtt-client.service';
 import { SseService } from '../sse/sse.service';
 import { FcmService } from '../fcm/fcm.service';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { MetricsService } from '../observability/metrics.service';
 import { createMetricsMock, observabilityTestProviders } from '../observability/testing';
 
@@ -47,6 +48,14 @@ describe('NotificationService', () => {
         { provide: MqttClientService, useValue: mqtt },
         { provide: SseService, useValue: sse },
         { provide: FcmService, useValue: fcm },
+        {
+          provide: DeviceAssignmentService,
+          // กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1 — notification ถูกประทับ deviceId เช่นเดียวกับ log
+          useValue: {
+            resolveDeviceId: jest.fn().mockResolvedValue('dev-1'),
+            resolveWard: jest.fn().mockResolvedValue('OPD'),
+          },
+        },
         ...observabilityTestProviders(metrics),
       ],
     }).compile();
@@ -58,7 +67,8 @@ describe('NotificationService', () => {
     const result = await service.create({ serial: 'SN-1', message: 'hi', detail: 'd' });
 
     expect(mqtt.publishNotification).toHaveBeenCalledWith('SN-1', baseNotif);
-    expect(sse.broadcast).toHaveBeenCalledWith('notification', baseNotif);
+    // ward ติดไปด้วยเพื่อให้ SSE กรองให้ client ที่ถูก scope ตาม ward
+    expect(sse.broadcast).toHaveBeenCalledWith('notification', baseNotif, 'OPD');
     expect(fcm.pushToSerial).toHaveBeenCalled();
     expect(prisma.notifications.update).toHaveBeenCalledWith({
       where: { id: 'n1' },

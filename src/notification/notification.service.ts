@@ -10,6 +10,7 @@ import { UpdateNotificationDto } from './dto/update-notification.dto';
 import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 
 const bySerialKey = (serial: string) => `notification:${serial}`;
 
@@ -33,6 +34,7 @@ export class NotificationService {
     private readonly fcmService: FcmService,
     private readonly traceService: TraceService,
     private readonly metrics: MetricsService,
+    private readonly assignments: DeviceAssignmentService,
   ) {}
 
   /**
@@ -41,9 +43,14 @@ export class NotificationService {
    * - อัปเดต deliveredSse / deliveredFcm ตามผลจริง
    */
   async create(dto: CreateNotificationDto): Promise<Notifications> {
+    // ประทับจุดติดตั้ง ณ เวลาที่แจ้งเตือนเกิด ด้วยเหตุผลเดียวกับ LogDays.deviceId
+    // (null ได้ ถ้ากล่องยังไม่ถูกติดตั้งที่ไหน)
+    const deviceId = await this.assignments.resolveDeviceId(dto.serial);
+
     const notification = await this.prisma.notifications.create({
       data: {
         serial: dto.serial,
+        deviceId,
         message: dto.message,
         detail: dto.detail ?? '',
       },
@@ -85,7 +92,9 @@ export class NotificationService {
       { 'device.serial': notification.serial },
       async () => {
         try {
-          this.sseService.broadcast('notification', notification);
+          // ส่ง ward ไปด้วยเพื่อให้ SseService กรองให้ client ที่ถูก scope ตาม ward ได้
+          const ward = await this.assignments.resolveWard(notification.serial);
+          this.sseService.broadcast('notification', notification, ward);
           this.metrics.recordNotificationDelivery('sse', 'success');
           return true;
         } catch (err) {

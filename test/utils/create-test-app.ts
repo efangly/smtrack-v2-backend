@@ -1,7 +1,9 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AppModule } from '../../src/app.module';
 import { HttpExceptionFilter } from '../../src/common/filters/http-exception.filter';
+import { ResponseInterceptor } from '../../src/common/interceptors/response.interceptor';
 import { RedisService } from '../../src/redis/redis.service';
 import { MqttClientService } from '../../src/mqtt/mqtt-client.service';
 import { FcmService } from '../../src/fcm/fcm.service';
@@ -37,6 +39,17 @@ export class InMemoryRedisStub {
   async getOrSet<T>(_key: string, _ttl: number, factory: () => Promise<T>): Promise<T> {
     return factory();
   }
+}
+
+/** ตรงกับ app.setGlobalPrefix('log') ใน src/main.ts — ทุก URL ในเทสต้องผ่าน prefix นี้ */
+export const API_PREFIX = '/log';
+
+/**
+ * แกะ payload ออกจาก envelope ของ ResponseInterceptor
+ * response สำเร็จทุกตัวถูกห่อเป็น { success, message, data, timestamp, statusCode }
+ */
+export function unwrap<T = any>(body: { data: T }): T {
+  return body.data;
 }
 
 export interface TestAppMocks {
@@ -94,6 +107,8 @@ export async function createTestApp(): Promise<TestAppContext> {
     new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: false }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalInterceptors(new ResponseInterceptor(app.get(Reflector)));
+  app.setGlobalPrefix(API_PREFIX.slice(1));
 
   await app.init();
   return { app, moduleRef, mocks };
