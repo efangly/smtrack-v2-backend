@@ -12,23 +12,36 @@ export const DEV_PREFIX = 'DEV-';
 /** interface แคบ ๆ พอสำหรับงาน seed — รับได้ทั้ง PrismaService และ PrismaClient ดิบ */
 export interface SeedablePrisma {
   devices: {
-    create(args: { data: DeviceSeed }): Promise<unknown>;
+    create(args: { data: DeviceFields }): Promise<{ id: string }>;
+    update(args: { where: { id: string }; data: { serial: string } }): Promise<unknown>;
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
+  hardware: {
     upsert(args: {
       where: { serial: string };
-      update: object;
-      create: DeviceSeed;
+      update: { firmware?: string };
+      create: { serial: string; firmware?: string };
     }): Promise<unknown>;
     deleteMany(args: { where: object }): Promise<{ count: number }>;
   };
+  deviceAssignments: {
+    create(args: { data: { deviceId: string; serial: string; reason?: string } }): Promise<unknown>;
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
   logDays: {
-    createMany(args: { data: LogSeed[] }): Promise<{ count: number }>;
+    createMany(args: { data: (LogSeed & { deviceId?: string })[] }): Promise<{ count: number }>;
     deleteMany(args: { where: object }): Promise<{ count: number }>;
   };
   notifications: {
-    createMany(args: { data: NotificationSeed[] }): Promise<{ count: number }>;
+    createMany(args: {
+      data: (NotificationSeed & { deviceId?: string })[];
+    }): Promise<{ count: number }>;
     deleteMany(args: { where: object }): Promise<{ count: number }>;
   };
 }
+
+/** ฟิลด์ของ "จุดติดตั้ง" ล้วน ๆ — ไม่รวม serial/firmware ซึ่งเป็นของกล่อง */
+export type DeviceFields = Omit<DeviceSeed, 'serial' | 'firmware'>;
 
 export interface DeviceSeed {
   serial: string;
@@ -68,7 +81,7 @@ export function buildDevices(prefix: string): DeviceSeed[] {
   return [1, 2, 3].map((n) => ({
     serial: serialFor(prefix, n),
     ward: n === 3 ? 'ICU' : 'OPD',
-    staticName: `Fridge ${n}`,
+    staticName: `${prefix}Fridge ${n}`,
     name: `${prefix}Fridge ${n}`,
     status: true,
     seq: n,
@@ -101,6 +114,52 @@ export function buildLogs(serial: string, hours: number, now = new Date()): LogS
   });
 }
 
+/**
+ * สร้างจุดติดตั้ง + กล่อง + assignment ให้ครบชุด
+ *
+ * ตั้งแต่แยก Devices/Hardware การ `devices.create()` เฉย ๆ ไม่พอแล้ว เพราะ LogDays.serial
+ * เป็น FK ไป hardware และ ingest ต้อง resolve serial → deviceId ผ่าน assignment ที่เปิดอยู่
+ */
+export async function seedDevice(
+  prisma: SeedablePrisma,
+  seed: DeviceSeed,
+): Promise<{ deviceId: string }> {
+  const { serial, firmware, ...deviceFields } = seed;
+  await prisma.hardware.upsert({
+    where: { serial },
+    update: { firmware },
+    create: { serial, firmware },
+  });
+  const device = await prisma.devices.create({ data: deviceFields });
+  await prisma.deviceAssignments.create({
+    data: { deviceId: device.id, serial, reason: 'seed' },
+  });
+  await prisma.devices.update({ where: { id: device.id }, data: { serial } });
+  return { deviceId: device.id };
+}
+
+/** สร้างกล่องเปล่าที่ยังไม่ถูกติดตั้งที่ไหน (ใช้ทดสอบเคสสลับเครื่อง) */
+export async function seedHardware(prisma: SeedablePrisma, serial: string): Promise<void> {
+  await prisma.hardware.upsert({
+    where: { serial },
+    update: {},
+    create: { serial, firmware: '1.0.0' },
+  });
+}
+
+/**
+ * ประทับ deviceId ให้ log ที่จะ insert ลง DB ตรง ๆ (ไม่ผ่าน TelemetryService.ingest)
+ *
+ * ปกติ deviceId ถูกประทับตอน ingest แต่ fixture ที่ยิง createMany เข้า DB ตรง ๆ ข้ามขั้นนั้นไป
+ * ถ้าไม่ประทับเอง แถวจะมี device_id = NULL แล้ว graph/logday (ซึ่ง query ด้วย device_id) จะไม่เห็น
+ */
+export function withDeviceId<T extends object>(
+  rows: T[],
+  deviceId: string,
+): (T & { deviceId: string })[] {
+  return rows.map((row) => ({ ...row, deviceId }));
+}
+
 export function buildNotifications(serial: string): NotificationSeed[] {
   return [
     { serial, message: 'Temperature high', detail: 'temp 8.5C exceeded threshold' },
@@ -110,7 +169,11 @@ export function buildNotifications(serial: string): NotificationSeed[] {
 }
 
 /**
- * ลบเฉพาะแถวที่ serial ขึ้นต้นด้วย prefix ตามลำดับ FK (LogDays/Notifications → Devices)
+ * ลบเฉพาะแถวที่ขึ้นต้นด้วย prefix ตามลำดับ FK
+ * log/notification → assignment → device → hardware
+ *
+ * ต้องลบ devices ด้วย staticName ด้วย ไม่ใช่แค่ serial เพราะจุดติดตั้งที่ถูกถอดกล่องออก
+ * จะมี serial = null (เกิดขึ้นจริงในเทสสลับเครื่อง) ถ้ากรองด้วย serial อย่างเดียวจะเหลือขยะค้าง
  * ปลอดภัยกับข้อมูลจริงบน shared DB เพราะ scope ด้วย startsWith เสมอ
  */
 export async function cleanupByPrefix(
@@ -123,6 +186,12 @@ export async function cleanupByPrefix(
   const where = { serial: { startsWith: prefix } };
   const logs = await prisma.logDays.deleteMany({ where });
   const notifications = await prisma.notifications.deleteMany({ where });
-  const devices = await prisma.devices.deleteMany({ where });
+  await prisma.deviceAssignments.deleteMany({ where });
+  const devices = await prisma.devices.deleteMany({
+    where: {
+      OR: [{ serial: { startsWith: prefix } }, { staticName: { startsWith: prefix } }],
+    },
+  });
+  await prisma.hardware.deleteMany({ where });
   return { logs: logs.count, notifications: notifications.count, devices: devices.count };
 }

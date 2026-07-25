@@ -6,23 +6,28 @@ import { AppEvents } from '../common/events/app-events';
 import { CreateTelemetryDto } from './dto/create-telemetry.dto';
 import { MetricsService } from '../observability/metrics.service';
 import { createMetricsMock, observabilityTestProviders } from '../observability/testing';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 
 describe('TelemetryService', () => {
   let service: TelemetryService;
   let prisma: { logDays: { create: jest.Mock; findMany: jest.Mock } };
   let emitter: { emit: jest.Mock };
   let metrics: jest.Mocked<MetricsService>;
+  let assignments: { resolveDeviceId: jest.Mock };
 
   beforeEach(async () => {
     prisma = { logDays: { create: jest.fn(), findMany: jest.fn() } };
     emitter = { emit: jest.fn() };
     metrics = createMetricsMock();
+    // ค่า default: กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1
+    assignments = { resolveDeviceId: jest.fn().mockResolvedValue('dev-1') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TelemetryService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: emitter },
+        { provide: DeviceAssignmentService, useValue: assignments },
         ...observabilityTestProviders(metrics),
       ],
     }).compile();
@@ -39,7 +44,9 @@ describe('TelemetryService', () => {
 
     expect(prisma.logDays.create).toHaveBeenCalledTimes(1);
     const arg = prisma.logDays.create.mock.calls[0][0];
-    expect(arg.data.device).toEqual({ connect: { serial: 'SN-1' } });
+    expect(arg.data.hardware).toEqual({ connect: { serial: 'SN-1' } });
+    // ประทับจุดติดตั้งที่ resolve ได้ ณ เวลา ingest
+    expect(arg.data.device).toEqual({ connect: { id: 'dev-1' } });
     expect(arg.data.temp).toBe(5.5);
     expect(emitter.emit).toHaveBeenCalledWith(AppEvents.TELEMETRY_CREATED, stored);
     expect(result).toBe(stored);

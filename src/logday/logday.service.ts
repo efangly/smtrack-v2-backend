@@ -6,7 +6,7 @@ import { UpdateLogdayDto } from './dto/update-logday.dto';
 
 export interface DailyRollup {
   day: Date;
-  serial: string;
+  deviceId: string;
   avgTemp: number;
   minTemp: number;
   maxTemp: number;
@@ -16,6 +16,8 @@ export interface DailyRollup {
 /**
  * สรุปข้อมูลรายวันจาก TimescaleDB (scaffold)
  * production ควรใช้ continuous aggregate ของ TimescaleDB แทน raw query นี้
+ *
+ * เรื่อง timezone ของ NOW() ดูหมายเหตุใน graph.service.ts — ต้อง AT TIME ZONE 'UTC' เหมือนกัน
  */
 @Injectable()
 export class LogdayService {
@@ -24,22 +26,23 @@ export class LogdayService {
     private readonly redis: RedisService,
   ) {}
 
-  summaryBySerial(serial: string, days = 7): Promise<DailyRollup[]> {
+  /** `deviceId` = จุดติดตั้ง ไม่ใช่ serial ของกล่อง (ดูเหตุผลใน LogDays.deviceId ของ schema) */
+  summaryByDevice(deviceId: string, days = 7): Promise<DailyRollup[]> {
     return this.redis.getOrSet(
-      `logday:${serial}:${days}`,
+      `logday:${deviceId}:${days}`,
       60,
       () =>
         this.prisma.$queryRaw<DailyRollup[]>`
         SELECT time_bucket('1 day', "send_time") AS day,
-               "serial",
+               "device_id"     AS "deviceId",
                AVG("temp")     AS "avgTemp",
                MIN("temp")     AS "minTemp",
                MAX("temp")     AS "maxTemp",
                COUNT(*)::int   AS "samples"
         FROM "log_days"
-        WHERE "serial" = ${serial}
-          AND "send_time" >= NOW() - (${days} || ' days')::interval
-        GROUP BY day, "serial"
+        WHERE "device_id" = ${deviceId}
+          AND "send_time" >= (NOW() AT TIME ZONE 'UTC') - (${days} || ' days')::interval
+        GROUP BY day, "device_id"
         ORDER BY day DESC
       `,
     );

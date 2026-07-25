@@ -7,6 +7,8 @@ import {
   buildLogs,
   buildNotifications,
   cleanupByPrefix,
+  seedDevice,
+  withDeviceId,
 } from '../test/fixtures/seed-data';
 
 /**
@@ -27,27 +29,27 @@ async function main(): Promise<void> {
     );
 
     const devices = buildDevices(DEV_PREFIX);
+    const deviceIds: string[] = [];
     for (const device of devices) {
-      await prisma.devices.upsert({
-        where: { serial: device.serial },
-        update: device,
-        create: device,
-      });
+      const { deviceId } = await seedDevice(prisma, device);
+      deviceIds.push(deviceId);
     }
     console.log(`สร้าง devices: ${devices.map((d) => d.serial).join(', ')}`);
 
     // device ตัวแรกมี log ย้อนหลัง 7 วัน (กราฟ/logday มีของดู), ตัวที่สองย้อนหลัง 24 ชม.
-    const logPlan: Array<[string, number]> = [
-      [devices[0].serial, 24 * 7],
-      [devices[1].serial, 24],
+    const logPlan: Array<[string, string, number]> = [
+      [devices[0].serial, deviceIds[0], 24 * 7],
+      [devices[1].serial, deviceIds[1], 24],
     ];
-    for (const [serial, hours] of logPlan) {
-      const { count } = await prisma.logDays.createMany({ data: buildLogs(serial, hours) });
+    for (const [serial, deviceId, hours] of logPlan) {
+      const { count } = await prisma.logDays.createMany({
+        data: withDeviceId(buildLogs(serial, hours), deviceId),
+      });
       console.log(`สร้าง logs ${serial}: ${count} แถว`);
     }
 
     const { count } = await prisma.notifications.createMany({
-      data: buildNotifications(devices[0].serial),
+      data: withDeviceId(buildNotifications(devices[0].serial), deviceIds[0]),
     });
     console.log(`สร้าง notifications ${devices[0].serial}: ${count} แถว`);
     console.log('seed เสร็จเรียบร้อย');

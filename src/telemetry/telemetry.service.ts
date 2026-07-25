@@ -7,6 +7,7 @@ import { CreateTelemetryDto } from './dto/create-telemetry.dto';
 import { QueryTelemetryDto } from './dto/query-telemetry.dto';
 import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 
 @Injectable()
 export class TelemetryService {
@@ -17,6 +18,7 @@ export class TelemetryService {
     private readonly eventEmitter: EventEmitter2,
     private readonly traceService: TraceService,
     private readonly metrics: MetricsService,
+    private readonly assignments: DeviceAssignmentService,
   ) {}
 
   /**
@@ -30,8 +32,13 @@ export class TelemetryService {
       throw new BadRequestException('serial is required (from payload or topic)');
     }
 
+    // ประทับจุดติดตั้ง ณ เวลาที่ log เข้ามา — คืน null ได้ถ้ากล่องยังไม่ถูกติดตั้งที่ไหน
+    // (เพิ่งซ่อมเสร็จ/อยู่ในคลัง) ซึ่งยังต้องเก็บ log ได้ ไม่ reject
+    const deviceId = await this.assignments.resolveDeviceId(serial);
+
     const data: Prisma.LogDaysCreateInput = {
-      device: { connect: { serial } },
+      hardware: { connect: { serial } },
+      ...(deviceId ? { device: { connect: { id: deviceId } } } : {}),
       temp: dto.temp,
       tempDisplay: dto.tempDisplay,
       humidity: dto.humidity,
@@ -68,6 +75,7 @@ export class TelemetryService {
   async find(query: QueryTelemetryDto): Promise<LogDays[]> {
     const where: Prisma.LogDaysWhereInput = {};
     if (query.serial) where.serial = query.serial;
+    if (query.deviceId) where.deviceId = query.deviceId;
     if (query.from || query.to) {
       where.sendTime = {};
       if (query.from) where.sendTime.gte = new Date(query.from);

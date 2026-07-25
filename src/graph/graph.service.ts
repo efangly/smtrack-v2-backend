@@ -11,6 +11,10 @@ export interface GraphPoint {
 /**
  * query/aggregate สำหรับ dashboard กราฟ (scaffold)
  * time_bucket ตาม interval ที่ระบุ
+ *
+ * หมายเหตุเรื่อง timezone: "send_time" เป็น timestamp without time zone ที่ Prisma เขียนเป็น UTC
+ * แต่ NOW() คืน timestamptz ซึ่งเวลาถูกเทียบกับคอลัมน์จะถูก cast เป็นเวลาท้องถิ่นของ DB
+ * (โปรดักชันตั้งเป็น Asia/Bangkok) ทำให้ช่วงเวลาเพี้ยนไป 7 ชม. — ต้อง AT TIME ZONE 'UTC' เสมอ
  */
 @Injectable()
 export class GraphService {
@@ -19,9 +23,10 @@ export class GraphService {
     private readonly redis: RedisService,
   ) {}
 
-  series(serial: string, bucket = '1 hour', hours = 24): Promise<GraphPoint[]> {
+  /** `deviceId` = จุดติดตั้ง ไม่ใช่ serial ของกล่อง จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง */
+  series(deviceId: string, bucket = '1 hour', hours = 24): Promise<GraphPoint[]> {
     return this.redis.getOrSet(
-      `graph:${serial}:${bucket}:${hours}`,
+      `graph:${deviceId}:${bucket}:${hours}`,
       45,
       () =>
         this.prisma.$queryRaw<GraphPoint[]>`
@@ -29,8 +34,8 @@ export class GraphService {
                AVG("temp")     AS "avgTemp",
                AVG("humidity") AS "avgHumidity"
         FROM "log_days"
-        WHERE "serial" = ${serial}
-          AND "send_time" >= NOW() - (${hours} || ' hours')::interval
+        WHERE "device_id" = ${deviceId}
+          AND "send_time" >= (NOW() AT TIME ZONE 'UTC') - (${hours} || ' hours')::interval
         GROUP BY bucket
         ORDER BY bucket ASC
       `,

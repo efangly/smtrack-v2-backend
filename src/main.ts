@@ -28,7 +28,7 @@ async function bootstrap(): Promise<void> {
   app.setGlobalPrefix('log');
 
   // frontend ยิง request ตรงด้วย fetch/EventSource พร้อม Authorization header (ไม่ใช้ cookie) จึงไม่ต้อง credentials: true
-  app.enableCors({ origin: config.get<AppConfig['corsOrigins']>('corsOrigins') });
+  app.enableCors({ origin: '*' });
 
   // เปิด Swagger UI เฉพาะ non-production เพื่อไม่ให้เพิ่ม attack surface บนโปรดักชัน
   if (config.get<AppConfig['observability']>('observability')?.environment !== 'production') {

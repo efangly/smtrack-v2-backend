@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { createTestApp } from './utils/create-test-app';
+import { API_PREFIX, createTestApp, unwrap } from './utils/create-test-app';
 import { E2E_PREFIX, buildDevices, cleanupByPrefix, serialFor } from './fixtures/seed-data';
 
 describe('Devices (e2e)', () => {
@@ -25,12 +25,13 @@ describe('Devices (e2e)', () => {
     it('สร้าง device ใหม่ได้และบันทึกลง DB จริง', async () => {
       const dto = buildDevices(E2E_PREFIX)[0];
 
-      const res = await request(app.getHttpServer()).post('/devices').send(dto);
+      const res = await request(app.getHttpServer()).post(`${API_PREFIX}/devices`).send(dto);
 
       expect(res.status).toBe(201);
-      expect(res.body.serial).toBe(dto.serial);
-      expect(res.body.id).toEqual(expect.any(String));
-      expect(res.body.online).toBe(false);
+      const device = unwrap(res.body);
+      expect(device.serial).toBe(dto.serial);
+      expect(device.id).toEqual(expect.any(String));
+      expect(device.online).toBe(false);
 
       // ยืนยันว่าเข้า DB จริง ไม่ใช่แค่ echo กลับมา
       const inDb = await prisma.devices.findUnique({ where: { serial: dto.serial } });
@@ -40,17 +41,18 @@ describe('Devices (e2e)', () => {
 
     it('ปฏิเสธ payload ที่ขาด field บังคับ (ValidationPipe ทำงาน)', async () => {
       const res = await request(app.getHttpServer())
-        .post('/devices')
+        .post(`${API_PREFIX}/devices`)
         .send({ serial: serialFor(E2E_PREFIX, 90) });
 
       expect(res.status).toBe(400);
-      expect(res.body.statusCode).toBe(400);
-      expect(res.body.path).toBe('/devices');
+      // error ไม่ผ่าน ResponseInterceptor แต่ถูกห่อโดย HttpExceptionFilter เป็น
+      // { message, success: false, data: null } — ไม่มี statusCode/path ใน body
+      expect(res.body.success).toBe(false);
+      expect(res.body.data).toBeNull();
 
-      // หมายเหตุ: HttpExceptionFilter ยัด exception.getResponse() ทั้งก้อนลง field `message`
-      // ทำให้ error ของ ValidationPipe ซ้อนสองชั้นเป็น body.message.message[]
-      // (รูปแบบนี้ใช้งานได้แต่ client ต้องเจาะสองชั้น — ดูหมายเหตุท้ายรายงาน)
-      const details: string[] = res.body.message.message;
+      // HttpExceptionFilter ดึง `message` ออกจาก exception.getResponse() มาใส่ body.message ตรง ๆ
+      // ของ ValidationPipe จึงเป็น array ของข้อความ error รายฟิลด์
+      const details: string[] = res.body.message;
       expect(details.join(' ')).toMatch(/ward/);
       expect(details.join(' ')).toMatch(/staticName/);
       expect(details.join(' ')).toMatch(/firmware/);
@@ -63,7 +65,7 @@ describe('Devices (e2e)', () => {
         seq: 'ไม่ใช่ตัวเลข',
       };
 
-      const res = await request(app.getHttpServer()).post('/devices').send(dto);
+      const res = await request(app.getHttpServer()).post(`${API_PREFIX}/devices`).send(dto);
 
       expect(res.status).toBe(400);
     });
@@ -71,21 +73,22 @@ describe('Devices (e2e)', () => {
     it('ตัด field แปลกปลอมทิ้งตาม whitelist ไม่เขียนลง DB', async () => {
       const dto = { ...buildDevices(E2E_PREFIX)[1], hackerField: 'should-be-stripped' };
 
-      const res = await request(app.getHttpServer()).post('/devices').send(dto);
+      const res = await request(app.getHttpServer()).post(`${API_PREFIX}/devices`).send(dto);
 
       expect(res.status).toBe(201);
-      expect(res.body).not.toHaveProperty('hackerField');
+      expect(unwrap(res.body)).not.toHaveProperty('hackerField');
     });
   });
 
   describe('GET /devices', () => {
     it('คืนรายการที่มี device ที่เพิ่งสร้าง (ไม่เช็ค count รวม เพราะ DB ใช้ร่วมกัน)', async () => {
-      const res = await request(app.getHttpServer()).get('/devices');
+      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/devices`);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
+      const devices = unwrap(res.body);
+      expect(Array.isArray(devices)).toBe(true);
 
-      const ours = res.body.filter((d: { serial: string }) => d.serial.startsWith(E2E_PREFIX));
+      const ours = devices.filter((d: { serial: string }) => d.serial.startsWith(E2E_PREFIX));
       expect(ours.length).toBeGreaterThanOrEqual(2);
     });
   });
@@ -94,14 +97,16 @@ describe('Devices (e2e)', () => {
     it('คืน device ที่ตรงกับ serial', async () => {
       const serial = serialFor(E2E_PREFIX, 1);
 
-      const res = await request(app.getHttpServer()).get(`/devices/${serial}`);
+      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/devices/${serial}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.serial).toBe(serial);
+      expect(unwrap(res.body).serial).toBe(serial);
     });
 
     it('คืน 404 เมื่อไม่มี serial นั้น', async () => {
-      const res = await request(app.getHttpServer()).get(`/devices/${E2E_PREFIX}ไม่มีจริง`);
+      const res = await request(app.getHttpServer()).get(
+        `${API_PREFIX}/devices/${E2E_PREFIX}ไม่มีจริง`,
+      );
 
       expect(res.status).toBe(404);
     });

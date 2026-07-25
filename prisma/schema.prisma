@@ -9,29 +9,226 @@ datasource db {
   provider = "postgresql"
 }
 
+/// จุดติดตั้งเชิงตรรกะ (logical unit) — เช่น "ตู้เย็น ICU เตียง 3" ไม่ใช่กล่องฮาร์ดแวร์
+///
+/// `staticName` คือ identity ถาวรของจุดติดตั้ง ส่วน `serial` เป็นเพียง pointer ไปยังกล่องที่
+/// "ติดตั้งอยู่ ณ ตอนนี้" (denormalized มาจาก assignment ที่ endedAt IS NULL) — เมื่อสลับเครื่อง
+/// ค่านี้เปลี่ยน แต่ config/probe/ประวัติ telemetry ยังผูกกับ Devices.id เดิมจึงอยู่ครบ
+///
+/// ⚠️ ห้ามเขียน `serial` ตรง ๆ จากที่อื่น ให้ผ่าน DeviceSwapService เท่านั้น
+/// เพื่อให้ assignment กับ pointer ตรงกันเสมอ
 model Devices {
-  id           String           @id @default(uuid()) @map("id")
-  serial       String           @unique @map("serial")
-  ward         String           @map("ward")
-  staticName   String           @map("static_name")
-  name         String?          @map("name")
-  status       Boolean          @map("status")
-  seq          Int              @map("seq")
-  firmware     String           @map("firmware")
-  remark       String?          @map("remark")
-  position     String?          @map("position")
-  positionPic  String?          @map("position_pic")
-  online       Boolean          @default(false) @map("online")
+  id           String              @id @default(uuid()) @map("id")
+  serial       String?             @unique @map("serial")
+  staticName   String              @unique @map("static_name")
+  ward         String              @default("WID-DEVELOPMENT") @map("ward")
+  name         String?             @map("name")
+  status       Boolean             @default(false) @map("status")
+  seq          Int                 @map("seq")
+  location     String?             @map("location")
+  position     String?             @map("position")
+  positionPic  String?             @map("position_pic")
+  remark       String?             @map("remark")
+  online       Boolean             @default(false) @map("online")
+  tag          String?             @map("tag")
+  hardware     Hardware?           @relation("CurrentHardware", fields: [serial], references: [serial], onDelete: SetNull)
+  assignments  DeviceAssignments[]
+  config       Configs?
+  probe        Probes[]
   log          LogDays[]
   notification Notifications[]
-  createAt     DateTime         @default(now()) @map("create_at")
-  updateAt     DateTime         @default(now()) @updatedAt @map("update_at")
+  createAt     DateTime            @default(now()) @map("create_at")
+  updateAt     DateTime            @default(now()) @updatedAt @map("update_at")
 
   @@map("devices")
 }
 
-// time-series log จากอุปกรณ์ — แปลงเป็น TimescaleDB hypertable บน sendTime หลัง migrate
-// ด้วย SELECT create_hypertable('"log_days"', 'send_time', migrate_data => true);
+/// กล่องฮาร์ดแวร์จริง — `serial` คือเลขเครื่องที่อุปกรณ์รายงานตัวเองผ่าน MQTT/JWT
+/// ถืออะไรก็ตามที่เดินตามกล่องไป: firmware, token, ประวัติซ่อม, ประกัน
+/// กล่องที่ถูกถอดออกมาซ่อมแล้วนำไปติดตั้งที่จุดอื่นยังเป็นแถวเดิมนี้ (ประวัติจึงตามไปด้วย)
+model Hardware {
+  id            String              @id @default(uuid()) @map("id")
+  serial        String              @unique @map("serial")
+  firmware      String              @default("1.0.0") @map("firmware")
+  token         String?             @map("token")
+  installDate   DateTime?           @default(now()) @map("install_date")
+  currentDevice Devices?            @relation("CurrentHardware")
+  assignments   DeviceAssignments[]
+  repair        Repairs[]
+  warranty      Warranties[]
+  log           LogDays[]
+  notification  Notifications[]
+  createAt      DateTime            @default(now()) @map("create_at")
+  updateAt      DateTime            @default(now()) @updatedAt @map("update_at")
+
+  @@map("hardware")
+}
+
+/// ประวัติว่ากล่องไหนถูกติดตั้งที่จุดไหน "ช่วงเวลาใด" — เป็น source of truth ของการสลับเครื่อง
+///
+/// ช่วงเวลาคือหัวใจ: กล่องที่ซ่อมเสร็จแล้วนำไปใช้ที่จุดอื่นจะมี assignment ใหม่คนละช่วง
+/// ทำให้ log เก่าของมันไม่ถูกนับเป็นของจุดติดตั้งใหม่ (partial unique index กันช่วงซ้อนกัน
+/// ดูใน migration — Prisma ประกาศ partial index ไม่ได้)
+model DeviceAssignments {
+  id        String    @id @default(uuid()) @map("id")
+  deviceId  String    @map("device_id")
+  serial    String    @map("serial")
+  startedAt DateTime  @default(now()) @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+  reason    String?   @map("reason")
+  device    Devices   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  hardware  Hardware  @relation(fields: [serial], references: [serial], onDelete: Cascade)
+  createAt  DateTime  @default(now()) @map("create_at")
+  updateAt  DateTime  @default(now()) @updatedAt @map("update_at")
+
+  @@index([serial, startedAt])
+  @@index([deviceId, startedAt])
+  @@map("device_assignments")
+}
+
+/// ตั้งค่า threshold/แจ้งเตือนต่อ probe — ยกมาจาก smtrack-device
+/// ผูกกับ "จุดติดตั้ง" (Devices.id) ไม่ใช่กล่อง เพราะเป็นค่าที่ตั้งตามหน้างาน
+/// เมื่อสลับกล่องใหม่เข้าจุดเดิม ค่าเหล่านี้จึงกลับมาใช้ได้ทันทีโดยไม่ต้องตั้งใหม่
+model Probes {
+  id                    String   @id @default(uuid()) @map("id")
+  deviceId              String   @map("device_id")
+  name                  String?  @default("P1") @map("name")
+  type                  String?  @default("SHT-31") @map("type")
+  channel               String   @default("1") @map("channel")
+  tempMin               Float    @default(0.00) @map("temp_min")
+  tempMax               Float    @default(0.00) @map("temp_max")
+  humiMin               Float    @default(0.00) @map("humi_min")
+  humiMax               Float    @default(0.00) @map("humi_max")
+  tempAdj               Float    @default(0.00) @map("temp_adj")
+  humiAdj               Float    @default(0.00) @map("humi_adj")
+  stampTime             String?  @default("5") @map("stamp_time")
+  doorQty               Int      @default(1) @map("door_qty")
+  position              String?  @map("position")
+  muteAlarmDuration     String?  @map("mute_alarm_duration")
+  doorSound             Boolean  @default(true) @map("door_sound")
+  doorAlarmTime         String?  @map("door_alarm_time")
+  muteDoorAlarmDuration String?  @map("mute_door_alarm_duration")
+  notiDelay             Int      @default(0) @map("noti_delay")
+  notiToNormal          Boolean  @default(true) @map("noti_to_normal")
+  notiMobile            Boolean  @default(true) @map("noti_mobile")
+  notiRepeat            Int      @default(1) @map("noti_repeat")
+  firstDay              Day      @default(OFF) @map("first_day")
+  secondDay             Day      @default(OFF) @map("second_day")
+  thirdDay              Day      @default(OFF) @map("third_day")
+  firstTime             String?  @default("0000") @map("first_time")
+  secondTime            String?  @default("0000") @map("second_time")
+  thirdTime             String?  @default("0000") @map("third_time")
+  device                Devices  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  createAt              DateTime @default(now()) @map("create_at")
+  updateAt              DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@index([deviceId])
+  @@map("probes")
+}
+
+/// network/email config ของจุดติดตั้ง (one-to-one กับ Devices) — ยกมาจาก smtrack-device
+/// ผูกกับ Devices.id ด้วยเหตุผลเดียวกับ Probes: สลับกล่องแล้ว config เดิมต้องกลับมา
+model Configs {
+  id         String   @id @default(uuid()) @map("id")
+  deviceId   String   @unique @map("device_id")
+  dhcp       Boolean  @default(true) @map("dhcp")
+  ip         String?  @map("ip")
+  mac        String?  @map("mac")
+  subnet     String?  @map("subnet")
+  gateway    String?  @map("gateway")
+  dns        String?  @map("dns")
+  dhcpEth    Boolean? @default(true) @map("dhcp_eth")
+  ipEth      String?  @map("ip_eth")
+  macEth     String?  @map("mac_eth")
+  subnetEth  String?  @map("subnet_eth")
+  gatewayEth String?  @map("gateway_eth")
+  dnsEth     String?  @map("dns_eth")
+  ssid       String?  @default("RDE3_2.4GHz") @map("ssid")
+  password   String?  @map("password")
+  simSP      String?  @map("sim_sp")
+  email1     String?  @map("email1")
+  email2     String?  @map("email2")
+  email3     String?  @map("email3")
+  hardReset  String?  @default("0200") @map("hard_reset")
+  device     Devices  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  createAt   DateTime @default(now()) @map("create_at")
+  updateAt   DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@map("configs")
+}
+
+/// ประวัติแจ้งซ่อม — ผูกกับ "กล่อง" (Hardware.serial) ไม่ใช่จุดติดตั้ง
+/// กล่องที่พังถูกส่งไปซ่อมแล้วนำไปใช้ที่จุดอื่น ประวัติซ่อมต้องตามกล่องไปด้วย
+model Repairs {
+  id             String   @id @default(uuid()) @map("id")
+  seq            Int      @unique @default(autoincrement()) @map("seq")
+  serial         String   @map("serial")
+  devName        String?  @map("dev_name")
+  info           String?  @map("info")
+  info1          String?  @map("info1")
+  info2          String?  @map("info2")
+  address        String?  @map("address")
+  ward           String?  @map("ward")
+  detail         String?  @map("detail")
+  phone          String?  @map("phone")
+  status         String?  @map("status")
+  warrantyStatus String?  @map("warranty_status")
+  remark         String?  @map("remark")
+  hardware       Hardware @relation(fields: [serial], references: [serial], onDelete: Cascade)
+  createAt       DateTime @default(now()) @map("create_at")
+  updateAt       DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@index([serial])
+  @@map("repairs")
+}
+
+/// ข้อมูลประกัน — ผูกกับกล่องด้วยเหตุผลเดียวกับ Repairs (ประกันเป็นของตัวเครื่อง)
+model Warranties {
+  id              String   @id @default(uuid()) @map("id")
+  serial          String   @map("serial")
+  devName         String?  @map("dev_name")
+  product         String?  @map("product")
+  model           String?  @map("model")
+  installDate     String?  @map("install_date")
+  customerName    String?  @map("customer_name")
+  customerAddress String?  @map("customer_address")
+  saleDepartment  String?  @map("sale_department")
+  invoice         String?  @map("invoice")
+  expire          DateTime @default(now()) @map("expire")
+  status          Boolean  @default(true) @map("status")
+  note            String?  @map("note")
+  hardware        Hardware @relation(fields: [serial], references: [serial], onDelete: Cascade)
+  createAt        DateTime @default(now()) @map("create_at")
+  updateAt        DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@index([serial])
+  @@map("warranties")
+}
+
+// ตารางเวลาแจ้งเตือนรายวันของ Probes
+enum Day {
+  OFF
+  ALL
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+  SUN
+}
+
+/// time-series log จากอุปกรณ์ — เป็น TimescaleDB hypertable บน send_time
+///
+/// `serial` = กล่องที่ยิง log เข้ามา (อุปกรณ์รู้จักแค่ตัวเอง ไม่รู้ว่าตัวเองถูกติดตั้งที่ไหน)
+/// `deviceId` = จุดติดตั้งที่ resolve ได้ ณ "เวลาที่ ingest" แล้วประทับลงไปเลย
+///
+/// การประทับตอน ingest ทำให้ประวัติเดินตามจุดติดตั้งได้โดยไม่ต้อง join ช่วงเวลาตอน query
+/// และแก้เคสกล่องที่ซ่อมเสร็จแล้วนำไปใช้ที่จุดอื่นได้อัตโนมัติ — log เก่าของกล่องนั้นยังผูกกับ
+/// จุดติดตั้งเดิม เพราะถูกประทับไว้ตั้งแต่ตอนที่มันยังอยู่ที่นั่น
+///
+/// nullable โดยตั้งใจ: กล่องที่ยังไม่ถูกติดตั้งที่ไหน (เพิ่งซ่อมเสร็จ/อยู่ในคลัง) ยังยิง log
+/// เข้ามาเก็บได้โดยไม่ถูก reject แถวพวกนี้จะไม่โผล่ใน dashboard ของจุดติดตั้งใด ซึ่งถูกต้อง
 model LogDays {
   id              String   @id @default(uuid()) @map("id")
   serial          String   @map("serial")
@@ -49,11 +246,14 @@ model LogDays {
   battery         Int      @default(0) @map("battery")
   tempInternal    Float?   @default(0.00) @map("temp_internal")
   extMemory       Boolean  @default(false) @map("ext_memory")
-  device          Devices  @relation(fields: [serial], references: [serial])
+  deviceId        String?  @map("device_id")
+  hardware        Hardware @relation(fields: [serial], references: [serial])
+  device          Devices? @relation(fields: [deviceId], references: [id])
   createAt        DateTime @default(now()) @map("create_at")
   updateAt        DateTime @default(now()) @updatedAt @map("update_at")
 
   @@index([serial, sendTime])
+  @@index([deviceId, sendTime])
   @@map("log_days")
 }
 
@@ -67,11 +267,14 @@ model Notifications {
   status       Boolean  @default(false) @map("status")
   deliveredSse Boolean  @default(false) @map("delivered_sse") // ส่งผ่าน SSE สำเร็จหรือยัง
   deliveredFcm Boolean  @default(false) @map("delivered_fcm") // ส่งผ่าน FCM สำเร็จหรือยัง
-  device       Devices  @relation(fields: [serial], references: [serial])
+  deviceId     String?  @map("device_id")
+  hardware     Hardware @relation(fields: [serial], references: [serial])
+  device       Devices? @relation(fields: [deviceId], references: [id])
   createAt     DateTime @default(now()) @map("create_at")
   updateAt     DateTime @default(now()) @updatedAt @map("update_at")
 
   @@index([serial, createAt])
+  @@index([deviceId, createAt])
   @@map("notifications")
 }
 
@@ -94,9 +297,12 @@ model LogDayArchive {
   battery         Int      @default(0) @map("battery")
   tempInternal    Float?   @default(0.00) @map("temp_internal")
   extMemory       Boolean  @default(false) @map("ext_memory")
+  // ไม่มี FK ไป Devices ด้วยเหตุผลเดียวกับ serial — ข้อมูล archive ต้องอยู่ต่อได้แม้ device ถูกลบ
+  deviceId        String?  @map("device_id")
   createAt        DateTime @default(now()) @map("create_at")
   updateAt        DateTime @default(now()) @updatedAt @map("update_at")
 
+  @@index([deviceId, sendTime])
   @@map("log_day_archive")
 }
 

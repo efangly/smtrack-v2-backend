@@ -30,7 +30,11 @@ export interface RestoreResult {
   objectKey: string;
 }
 
-const LOG_DAY_ARCHIVE_COLUMNS = [
+/**
+ * ลำดับคอลัมน์ของไฟล์ที่ export ไว้ "ก่อน" จะมีคอลัมน์ device_id
+ * ใช้เมื่อไฟล์ meta ไม่มีฟิลด์ `columns` (ไฟล์เก่า) — ห้ามแก้ลำดับนี้ ไม่งั้น backup เก่าจะ restore ไม่ได้
+ */
+const LEGACY_LOG_DAY_ARCHIVE_COLUMNS = [
   'id',
   'serial',
   'temp',
@@ -108,12 +112,19 @@ export class ArchiveRestoreService {
       throw new NotFoundException(`ไม่พบ backup ของเดือน ${month} (${key})`);
     }
 
+    // ต้องอ่าน meta ก่อน COPY เพราะลำดับคอลัมน์ของไฟล์ถูกกำหนดจาก meta.columns
+    // ไฟล์ที่ export ไว้ก่อนมีคอลัมน์ device_id จะไม่มีฟิลด์นี้ จึงถอยไปใช้ชุด legacy
+    const meta = (await this.storage.exists(metaObjectKey(month)))
+      ? await this.storage.getJson<ArchiveMeta>(metaObjectKey(month))
+      : undefined;
+    const fileColumns = meta?.columns ?? LEGACY_LOG_DAY_ARCHIVE_COLUMNS;
+
     this.logger.log(`restoring ${month} from s3://${this.storage.bucket}/${key}`);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
 
-      const columns = LOG_DAY_ARCHIVE_COLUMNS.map((c) => `"${c}"`).join(', ');
+      const columns = fileColumns.map((c) => `"${c}"`).join(', ');
       const ingest = client.query(
         copyFrom(`COPY "log_day_archive" (${columns}) FROM STDIN WITH (FORMAT csv, HEADER)`),
       );
@@ -122,11 +133,8 @@ export class ArchiveRestoreService {
       const rowCount = Number(ingest.rowCount ?? 0);
 
       // ตรวจกับ metadata ที่เขียนไว้ตอน export (ถ้ามี)
-      if (await this.storage.exists(metaObjectKey(month))) {
-        const meta = await this.storage.getJson<ArchiveMeta>(metaObjectKey(month));
-        if (meta.rowCount !== rowCount) {
-          throw new Error(`restore ${month} mismatch: meta=${meta.rowCount}, inserted=${rowCount}`);
-        }
+      if (meta && meta.rowCount !== rowCount) {
+        throw new Error(`restore ${month} mismatch: meta=${meta.rowCount}, inserted=${rowCount}`);
       }
 
       await client.query(

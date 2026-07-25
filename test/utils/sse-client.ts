@@ -16,12 +16,16 @@ export class SseClient {
   private readonly received: SseEvent[] = [];
   private waiter?: { match: (e: SseEvent) => boolean; resolve: (e: SseEvent) => void };
 
+  /** status code ของ response — ใช้ยืนยันเคส 401/403 ที่ไม่ได้เปิด stream จริง */
+  statusCode?: number;
+
   /** เปิด connection และ resolve เมื่อได้ response header แล้ว (พร้อมรับ event) */
-  async connect(port: number, path: string): Promise<void> {
+  async connect(port: number, path: string, headers: Record<string, string> = {}): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       this.req = http.get(
-        { host: '127.0.0.1', port, path, headers: { Accept: 'text/event-stream' } },
+        { host: '127.0.0.1', port, path, headers: { Accept: 'text/event-stream', ...headers } },
         (res) => {
+          this.statusCode = res.statusCode;
           this.res = res;
           res.setEncoding('utf8');
           res.on('data', (chunk: string) => this.onChunk(chunk));

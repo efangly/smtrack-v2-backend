@@ -24,9 +24,17 @@ export interface ArchiveMeta {
   rowCount: number;
   sha256: string; // ของ CSV ก่อน gzip
   exportedAt: string;
+  /**
+   * ลำดับคอลัมน์ที่อยู่ในไฟล์ CSV
+   *
+   * COPY ... FROM STDIN อ่านไฟล์ตามลำดับคอลัมน์ที่ระบุใน statement ไม่ได้อ่านจากบรรทัด header
+   * ถ้าไม่บันทึกไว้ พอ schema เพิ่มคอลัมน์ (เช่นตอนเพิ่ม device_id) ไฟล์เก่าจะ restore ไม่ได้อีกเลย
+   * ฟิลด์นี้ไม่มีในไฟล์ meta ที่ export ก่อนหน้านี้ ฝั่ง restore จึงต้อง fallback เป็นชุด legacy
+   */
+  columns?: readonly string[];
 }
 
-const LOG_DAYS_COLUMNS = [
+export const LOG_DAYS_COLUMNS = [
   'id',
   'serial',
   'temp',
@@ -45,6 +53,7 @@ const LOG_DAYS_COLUMNS = [
   'ext_memory',
   'create_at',
   'update_at',
+  'device_id',
 ] as const;
 
 /** Transform ที่นับจำนวนบรรทัดและคำนวณ sha256 ระหว่างที่ข้อมูลไหลผ่าน */
@@ -134,6 +143,7 @@ export class ArchiveExportService {
         rowCount,
         sha256: stats.hash.digest('hex'),
         exportedAt: new Date().toISOString(),
+        columns: LOG_DAYS_COLUMNS,
       };
       await this.storage.putJson(metaObjectKey(month), meta);
 

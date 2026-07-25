@@ -5,6 +5,7 @@
 export const AppEvents = {
   TELEMETRY_CREATED: 'telemetry.created',
   NOTIFICATION_CREATED: 'notification.created',
+  DEVICE_CHANGED: 'device.changed',
 } as const;
 
 export type AppEventName = (typeof AppEvents)[keyof typeof AppEvents];

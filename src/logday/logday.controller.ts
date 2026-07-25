@@ -23,6 +23,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { DevicePayloadDto } from '../common/dto/device-payload.dto';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 
 @ApiTags('logday')
 @Controller('logday')
@@ -30,11 +31,14 @@ export class LogdayController {
   constructor(
     private readonly logdayService: LogdayService,
     private readonly telemetryService: TelemetryService,
+    private readonly assignments: DeviceAssignmentService,
   ) {}
 
-  @Get(':serial')
-  summary(@Param('serial') serial: string) {
-    return this.logdayService.summaryBySerial(serial);
+  /** รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง (ดู GraphController) */
+  @Get(':serialOrName')
+  async summary(@Param('serialOrName') serialOrName: string) {
+    const deviceId = await this.assignments.resolveDeviceIdOrThrow(serialOrName);
+    return this.logdayService.summaryByDevice(deviceId);
   }
 
   /**
