@@ -8,6 +8,8 @@ import { QueryTelemetryDto } from './dto/query-telemetry.dto';
 import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
+import { Paginated } from '../common/pagination/paginated.dto';
+import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
 @Injectable()
 export class TelemetryService {
@@ -72,7 +74,7 @@ export class TelemetryService {
   }
 
   /** query log ย้อนหลังสำหรับ REST endpoint */
-  async find(query: QueryTelemetryDto): Promise<LogDays[]> {
+  async find(query: QueryTelemetryDto): Promise<Paginated<LogDays>> {
     const where: Prisma.LogDaysWhereInput = {};
     if (query.serial) where.serial = query.serial;
     if (query.deviceId) where.deviceId = query.deviceId;
@@ -82,10 +84,15 @@ export class TelemetryService {
       if (query.to) where.sendTime.lte = new Date(query.to);
     }
 
-    return this.prisma.logDays.findMany({
-      where,
-      orderBy: { sendTime: 'desc' },
-      take: query.limit ?? 100,
-    });
+    const [data, total] = await Promise.all([
+      this.prisma.logDays.findMany({
+        where,
+        orderBy: { sendTime: 'desc' },
+        skip: paginationSkip(query),
+        take: query.limit ?? 100,
+      }),
+      this.prisma.logDays.count({ where }),
+    ]);
+    return toPaginated(data, total, query);
   }
 }

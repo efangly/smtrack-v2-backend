@@ -45,6 +45,22 @@ export class InMemoryRedisStub {
 export const API_PREFIX = '/log';
 
 /**
+ * รอ event listener แบบ fire-and-forget (EventEmitter2.emit ไม่ await) เขียนลง DB เสร็จ
+ *
+ * setImmediate() เดียวพอสำหรับ mock ในหน่วยเทส แต่ตัว e2e ต่อ DB จริงผ่านเครือข่าย
+ * (round trip จริง ไม่ใช่ local) จึง poll จนกว่า condition จะเป็นจริงแทนการเดา tick เดียว
+ */
+export async function waitFor(
+  condition: () => Promise<boolean>,
+  { retries = 20, intervalMs = 50 }: { retries?: number; intervalMs?: number } = {},
+): Promise<void> {
+  for (let i = 0; i < retries; i++) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+/**
  * แกะ payload ออกจาก envelope ของ ResponseInterceptor
  * response สำเร็จทุกตัวถูกห่อเป็น { success, message, data, timestamp, statusCode }
  */

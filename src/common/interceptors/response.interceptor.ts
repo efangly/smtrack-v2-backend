@@ -5,11 +5,13 @@ import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { HTTP_MESSAGES } from '../constants/http.constants';
 import { SKIP_INTERCEPTOR } from '../decorators/skip-interceptor.decorator';
+import { Paginated, PaginationMeta } from '../pagination/paginated.dto';
 
 export interface StandardResponse<T> {
   success: boolean;
   message: string;
   data: T | null;
+  meta?: PaginationMeta;
   timestamp: string;
   statusCode: number;
 }
@@ -41,6 +43,17 @@ export class ResponseInterceptor<T> implements NestInterceptor<T, StandardRespon
           case 'DELETE':
             message = HTTP_MESSAGES.DELETED;
             break;
+        }
+
+        if (data instanceof Paginated) {
+          return {
+            success: true,
+            message,
+            data: data.data,
+            meta: data.meta,
+            timestamp: new Date().toISOString(),
+            statusCode: response.statusCode || 200,
+          } as StandardResponse<T>;
         }
 
         return {

@@ -218,17 +218,6 @@ enum Day {
   SUN
 }
 
-/// time-series log จากอุปกรณ์ — เป็น TimescaleDB hypertable บน send_time
-///
-/// `serial` = กล่องที่ยิง log เข้ามา (อุปกรณ์รู้จักแค่ตัวเอง ไม่รู้ว่าตัวเองถูกติดตั้งที่ไหน)
-/// `deviceId` = จุดติดตั้งที่ resolve ได้ ณ "เวลาที่ ingest" แล้วประทับลงไปเลย
-///
-/// การประทับตอน ingest ทำให้ประวัติเดินตามจุดติดตั้งได้โดยไม่ต้อง join ช่วงเวลาตอน query
-/// และแก้เคสกล่องที่ซ่อมเสร็จแล้วนำไปใช้ที่จุดอื่นได้อัตโนมัติ — log เก่าของกล่องนั้นยังผูกกับ
-/// จุดติดตั้งเดิม เพราะถูกประทับไว้ตั้งแต่ตอนที่มันยังอยู่ที่นั่น
-///
-/// nullable โดยตั้งใจ: กล่องที่ยังไม่ถูกติดตั้งที่ไหน (เพิ่งซ่อมเสร็จ/อยู่ในคลัง) ยังยิง log
-/// เข้ามาเก็บได้โดยไม่ถูก reject แถวพวกนี้จะไม่โผล่ใน dashboard ของจุดติดตั้งใด ซึ่งถูกต้อง
 model LogDays {
   id              String   @id @default(uuid()) @map("id")
   serial          String   @map("serial")
@@ -304,6 +293,45 @@ model LogDayArchive {
 
   @@index([deviceId, sendTime])
   @@map("log_day_archive")
+}
+
+/// audit ของการเพิ่ม/แก้ไข/สลับข้อมูลอุปกรณ์ — อายุเท่า telemetry (6 เดือน) ผ่าน TimescaleDB
+/// retention policy เดียวกับ LogDays ไม่ผูก FK กับ Devices เพื่อให้แถว audit อยู่ต่อได้แม้
+/// จุดติดตั้งถูกลบไปในอนาคต
+model DeviceAudit {
+  id         String   @id @default(uuid()) @map("id")
+  deviceId   String   @map("device_id")
+  staticName String   @map("static_name")
+  action     String   @map("action")
+  actorId    String?  @map("actor_id")
+  actorName  String?  @map("actor_name")
+  actorRole  String?  @map("actor_role")
+  snapshot   Json     @map("snapshot")
+  createAt   DateTime @default(now()) @map("create_at")
+
+  @@index([deviceId, createAt])
+  @@index([actorId, createAt])
+  @@map("device_audit")
+}
+
+/// audit log รวมทุก action ของ user ข้าม entity (device/probe/config/repair) — ต่างจาก DeviceAudit
+/// ที่ query หลักคือ deviceId, ตัวนี้ query หลักคือ actorId (ไม่มี model Users เก็บผู้ใช้เองในระบบนี้
+/// actor มาจาก JWT payload เท่านั้น) อายุ/retention เดียวกับ DeviceAudit (6 เดือน, TimescaleDB hypertable)
+/// ไม่ผูก FK กับ entity ใด ๆ ด้วยเหตุผลเดียวกับ DeviceAudit — แถว audit ต้องอยู่ต่อได้แม้ entity ถูกลบ
+model UserAudit {
+  id         String   @id @default(uuid()) @map("id")
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  action     String   @map("action")
+  actorId    String?  @map("actor_id")
+  actorName  String?  @map("actor_name")
+  actorRole  String?  @map("actor_role")
+  snapshot   Json     @map("snapshot")
+  createAt   DateTime @default(now()) @map("create_at")
+
+  @@index([actorId, createAt])
+  @@index([entityType, entityId, createAt])
+  @@map("user_audit")
 }
 
 // audit ของการ export LogDays รายเดือนขึ้น object storage (กัน export ซ้ำ)

@@ -1,7 +1,8 @@
 import { Type } from 'class-transformer';
 import { IsDateString, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
-export class QueryTelemetryDto {
+export class QueryTelemetryDto extends PaginationQueryDto {
   /** กรองด้วยกล่องฮาร์ดแวร์ — ได้เฉพาะ log ที่กล่องนั้นยิงมา ไม่ว่าตอนนั้นติดตั้งอยู่ที่ไหน */
   @IsString()
   @IsOptional()
@@ -20,6 +21,7 @@ export class QueryTelemetryDto {
   @IsOptional()
   to?: string;
 
+  // telemetry เป็น time-series volume สูง เลย override ขอบเขตของ limit ให้กว้างกว่า default ของ PaginationQueryDto
   @Type(() => Number)
   @IsInt()
   @Min(1)
