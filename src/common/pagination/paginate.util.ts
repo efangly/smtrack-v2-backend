@@ -11,6 +11,6 @@ export function toPaginated<T>(
   pagination: PaginationQueryDto,
 ): Paginated<T> {
   const page = pagination.page ?? 1;
-  const limit = pagination.limit ?? 200;
+  const limit = pagination.limit ?? 20;
   return new Paginated(data, { page, limit, total, totalPages: Math.ceil(total / limit) || 0 });
 }

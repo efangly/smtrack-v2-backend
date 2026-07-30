@@ -130,3 +130,55 @@ describe('DeviceService — device.changed event', () => {
     await expect(service.setOnline('SN-1', true)).resolves.toBe(device);
   });
 });
+
+describe('DeviceService — findAll pagination', () => {
+  let service: DeviceService;
+  let prisma: { devices: { findMany: jest.Mock; count: jest.Mock } };
+  let redis: { getOrSet: jest.Mock };
+
+  beforeEach(async () => {
+    prisma = { devices: { findMany: jest.fn(), count: jest.fn() } };
+    redis = {
+      getOrSet: jest.fn((_key: string, _ttl: number, factory: () => unknown) => factory()),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        DeviceService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: RedisService, useValue: redis },
+        { provide: DeviceImageStorageService, useValue: {} },
+        { provide: DeviceAssignmentService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+      ],
+    }).compile();
+
+    service = module.get(DeviceService);
+  });
+
+  it('ไม่มี ward filter → count ทั้งตาราง ไม่ผ่าน where', async () => {
+    prisma.devices.findMany.mockResolvedValue([]);
+    prisma.devices.count.mockResolvedValue(50);
+
+    const result = await service.findAll({ page: 1, limit: 20 } as never);
+
+    expect(prisma.devices.count).toHaveBeenCalledWith({ where: undefined });
+    expect(result.meta.total).toBe(50);
+    expect(result.meta.totalPages).toBe(3);
+  });
+
+  it('มี ward filter → findMany และ count ต้องใช้ where เดียวกัน ไม่ใช่ count เต็มตาราง', async () => {
+    prisma.devices.findMany.mockResolvedValue([]);
+    // ตั้งใจให้ค่านี้เล็กกว่าที่ควรจะเป็นถ้า count ไม่กรอง ward (เช่น 50 ทั้งตาราง)
+    // เพื่อพิสูจน์ว่า meta.total มาจาก count ที่กรองแล้วจริง ๆ ไม่ใช่ค่าที่ hardcode ไว้ทั้งระบบ
+    prisma.devices.count.mockResolvedValue(3);
+
+    const result = await service.findAll({ page: 1, limit: 20, ward: ['ICU'] } as never);
+
+    const expectedWhere = { where: { ward: { in: ['ICU'] } } };
+    expect(prisma.devices.findMany).toHaveBeenCalledWith(expect.objectContaining(expectedWhere));
+    expect(prisma.devices.count).toHaveBeenCalledWith(expectedWhere);
+    expect(result.meta.total).toBe(3);
+    expect(result.meta.totalPages).toBe(1);
+  });
+});

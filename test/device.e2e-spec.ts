@@ -3,7 +3,13 @@ import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { API_PREFIX, createTestApp, unwrap } from './utils/create-test-app';
 import { bearerUser } from './utils/auth';
-import { E2E_PREFIX, buildDevices, cleanupByPrefix, serialFor } from './fixtures/seed-data';
+import {
+  E2E_PREFIX,
+  buildDevices,
+  cleanupByPrefix,
+  seedDevice,
+  serialFor,
+} from './fixtures/seed-data';
 
 describe('Devices (e2e)', () => {
   let app: INestApplication;
@@ -146,6 +152,51 @@ describe('Devices (e2e)', () => {
 
       const ours = devices.filter((d: { serial: string }) => d.serial.startsWith(E2E_PREFIX));
       expect(ours.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('GET /devices?ward=', () => {
+    it('meta.total ต้องนับเฉพาะ device ที่ตรง ward filter ไม่ใช่ count ทั้งตาราง', async () => {
+      // ใช้ ward ที่ผูกกับ E2E_PREFIX เฉพาะรอบนี้ เพื่อไม่ชนกับ device ward อื่นบน shared DB
+      const wardA = `${E2E_PREFIX}WARD-A`;
+      const wardB = `${E2E_PREFIX}WARD-B`;
+      const seeds = [
+        {
+          ...buildDevices(E2E_PREFIX)[0],
+          serial: serialFor(E2E_PREFIX, 50),
+          staticName: `${E2E_PREFIX}Ward A 1`,
+          seq: 50,
+          ward: wardA,
+        },
+        {
+          ...buildDevices(E2E_PREFIX)[0],
+          serial: serialFor(E2E_PREFIX, 51),
+          staticName: `${E2E_PREFIX}Ward A 2`,
+          seq: 51,
+          ward: wardA,
+        },
+        {
+          ...buildDevices(E2E_PREFIX)[0],
+          serial: serialFor(E2E_PREFIX, 52),
+          staticName: `${E2E_PREFIX}Ward B 1`,
+          seq: 52,
+          ward: wardB,
+        },
+      ];
+      for (const seed of seeds) await seedDevice(prisma, seed);
+
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices`)
+        .query({ ward: wardA, limit: 1 });
+
+      expect(res.status).toBe(200);
+      // ก่อนแก้บั๊ก: count ไม่กรอง ward เลยได้จำนวน device ทั้งตาราง (shared DB) ไม่ใช่ 2
+      expect(res.body.meta.total).toBe(2);
+      expect(res.body.meta.totalPages).toBe(2);
+      expect(unwrap(res.body)).toHaveLength(1);
+      for (const device of unwrap(res.body) as { ward: string }[]) {
+        expect(device.ward).toBe(wardA);
+      }
     });
   });
 

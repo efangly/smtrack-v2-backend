@@ -15,13 +15,13 @@ import { DeviceAssignmentService } from './device-assignment.service';
 import { DeviceImageStorageService } from './device-image-storage.service';
 import { CreateDeviceDto } from './dto/create-device.dto';
 import { UpdateDeviceDto } from './dto/update-device.dto';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { QueryDeviceDto } from './dto/query-device.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
 const ALL_KEY_PREFIX = 'device:all';
-const allKey = (pagination: PaginationQueryDto) =>
-  `${ALL_KEY_PREFIX}:${pagination.page ?? 1}:${pagination.limit ?? 20}`;
+const allKey = (pagination: QueryDeviceDto) =>
+  `${ALL_KEY_PREFIX}:${pagination.page ?? 1}:${pagination.limit ?? 20}:${(pagination.ward ?? []).slice().sort().join(',')}`;
 const oneKey = (serial: string) => `device:${serial}`;
 
 /** include กล่องที่ติดตั้งอยู่ปัจจุบันเสมอ เพื่อให้ client ยังเห็น firmware/token เหมือนก่อนแยกตาราง */
@@ -112,18 +112,20 @@ export class DeviceService {
     return this.imageStorage.upload(key, file.buffer, file.mimetype);
   }
 
-  async findAll(pagination: PaginationQueryDto): Promise<Paginated<Devices>> {
+  async findAll(pagination: QueryDeviceDto): Promise<Paginated<Devices>> {
     // เก็บ cache เป็น {data, total} ธรรมดา ไม่ใช่ instance ของ Paginated เพราะ getOrSet
     // เขียน/อ่านผ่าน JSON.stringify/parse ทำให้ instanceof เช็คไม่ผ่านตอน cache hit
     const { data, total } = await this.redis.getOrSet(allKey(pagination), 300, async () => {
+      const where = pagination.ward?.length ? { ward: { in: pagination.ward } } : undefined;
       const [data, total] = await Promise.all([
         this.prisma.devices.findMany({
+          where,
           include: WITH_HARDWARE,
           orderBy: { seq: 'asc' },
           skip: paginationSkip(pagination),
           take: pagination.limit ?? 20,
         }),
-        this.prisma.devices.count(),
+        this.prisma.devices.count({ where }),
       ]);
       return { data, total };
     });
