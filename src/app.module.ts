@@ -15,6 +15,12 @@ import { MqttModule } from './mqtt/mqtt.module';
 import { FcmModule } from './fcm/fcm.module';
 import { NotificationModule } from './notification/notification.module';
 import { DeviceModule } from './device/device.module';
+import { AuditModule } from './audit/audit.module';
+import { ProbeModule } from './probe/probe.module';
+import { DeviceConfigModule } from './device-config/device-config.module';
+import { DeviceRepairModule } from './device-repair/device-repair.module';
+import { WarrantiesModule } from './warranties/warranties.module';
+import { UserAuditModule } from './user-audit/user-audit.module';
 import { LogdayModule } from './logday/logday.module';
 import { GraphModule } from './graph/graph.module';
 import { BackupModule } from './backup/backup.module';
@@ -49,6 +55,12 @@ import { MobileModule } from './mobile/mobile.module';
     FcmModule,
     NotificationModule,
     DeviceModule,
+    AuditModule,
+    ProbeModule,
+    DeviceConfigModule,
+    DeviceRepairModule,
+    WarrantiesModule,
+    UserAuditModule,
     // supporting modules
     LogdayModule,
     GraphModule,

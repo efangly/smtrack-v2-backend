@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { API_PREFIX, createTestApp, unwrap } from './utils/create-test-app';
+import { bearerUser } from './utils/auth';
 import { E2E_PREFIX, buildDevices, cleanupByPrefix, serialFor } from './fixtures/seed-data';
 
 describe('Devices (e2e)', () => {
@@ -22,10 +23,21 @@ describe('Devices (e2e)', () => {
   });
 
   describe('POST /devices', () => {
-    it('สร้าง device ใหม่ได้และบันทึกลง DB จริง', async () => {
+    it('ปฏิเสธเมื่อไม่แนบ bearer token (guard ไว้เพื่อให้ audit รู้ actor เสมอ)', async () => {
       const dto = buildDevices(E2E_PREFIX)[0];
 
       const res = await request(app.getHttpServer()).post(`${API_PREFIX}/devices`).send(dto);
+
+      expect(res.status).toBe(401);
+    });
+
+    it('สร้าง device ใหม่ได้และบันทึกลง DB จริง พร้อมบันทึก audit ของผู้สร้าง', async () => {
+      const dto = buildDevices(E2E_PREFIX)[0];
+
+      const res = await request(app.getHttpServer())
+        .post(`${API_PREFIX}/devices`)
+        .set('Authorization', bearerUser())
+        .send(dto);
 
       expect(res.status).toBe(201);
       const device = unwrap(res.body);
@@ -37,11 +49,19 @@ describe('Devices (e2e)', () => {
       const inDb = await prisma.devices.findUnique({ where: { serial: dto.serial } });
       expect(inDb).not.toBeNull();
       expect(inDb!.ward).toBe(dto.ward);
+
+      // audit listener ทำงานแบบ async (EventEmitter2) — รอให้ event loop ว่างก่อนอ่าน
+      await new Promise((resolve) => setImmediate(resolve));
+      const audits = await prisma.deviceAudit.findMany({ where: { deviceId: device.id } });
+      expect(audits).toHaveLength(1);
+      expect(audits[0].action).toBe('created');
+      expect(audits[0].actorId).toBe('e2e-user');
     });
 
     it('ปฏิเสธ payload ที่ขาด field บังคับ (ValidationPipe ทำงาน)', async () => {
       const res = await request(app.getHttpServer())
         .post(`${API_PREFIX}/devices`)
+        .set('Authorization', bearerUser())
         .send({ serial: serialFor(E2E_PREFIX, 90) });
 
       expect(res.status).toBe(400);
@@ -65,7 +85,10 @@ describe('Devices (e2e)', () => {
         seq: 'ไม่ใช่ตัวเลข',
       };
 
-      const res = await request(app.getHttpServer()).post(`${API_PREFIX}/devices`).send(dto);
+      const res = await request(app.getHttpServer())
+        .post(`${API_PREFIX}/devices`)
+        .set('Authorization', bearerUser())
+        .send(dto);
 
       expect(res.status).toBe(400);
     });
@@ -73,10 +96,43 @@ describe('Devices (e2e)', () => {
     it('ตัด field แปลกปลอมทิ้งตาม whitelist ไม่เขียนลง DB', async () => {
       const dto = { ...buildDevices(E2E_PREFIX)[1], hackerField: 'should-be-stripped' };
 
-      const res = await request(app.getHttpServer()).post(`${API_PREFIX}/devices`).send(dto);
+      const res = await request(app.getHttpServer())
+        .post(`${API_PREFIX}/devices`)
+        .set('Authorization', bearerUser())
+        .send(dto);
 
       expect(res.status).toBe(201);
       expect(unwrap(res.body)).not.toHaveProperty('hackerField');
+    });
+  });
+
+  describe('GET /devices/by-name/:staticName/audit', () => {
+    it('คืนประวัติการสร้าง/แก้ไขของจุดติดตั้ง เรียงจากใหม่ไปเก่า', async () => {
+      const dto = buildDevices(E2E_PREFIX)[2];
+
+      const createRes = await request(app.getHttpServer())
+        .post(`${API_PREFIX}/devices`)
+        .set('Authorization', bearerUser())
+        .send(dto);
+      expect(createRes.status).toBe(201);
+      const device = unwrap(createRes.body);
+
+      const updateRes = await request(app.getHttpServer())
+        .put(`${API_PREFIX}/devices/${device.serial}`)
+        .set('Authorization', bearerUser())
+        .send({ remark: 'แก้ไขผ่าน e2e' });
+      expect(updateRes.status).toBe(200);
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const auditRes = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/by-name/${encodeURIComponent(dto.staticName)}/audit`)
+        .set('Authorization', bearerUser());
+
+      expect(auditRes.status).toBe(200);
+      const audits = unwrap(auditRes.body);
+      expect(audits.map((a: { action: string }) => a.action)).toEqual(['updated', 'created']);
+      expect(audits[0].actorId).toBe('e2e-user');
     });
   });
 

@@ -10,13 +10,13 @@ import { DeviceAssignmentService } from '../device/device-assignment.service';
 
 describe('TelemetryService', () => {
   let service: TelemetryService;
-  let prisma: { logDays: { create: jest.Mock; findMany: jest.Mock } };
+  let prisma: { logDays: { create: jest.Mock; findMany: jest.Mock; count: jest.Mock } };
   let emitter: { emit: jest.Mock };
   let metrics: jest.Mocked<MetricsService>;
   let assignments: { resolveDeviceId: jest.Mock };
 
   beforeEach(async () => {
-    prisma = { logDays: { create: jest.fn(), findMany: jest.fn() } };
+    prisma = { logDays: { create: jest.fn(), findMany: jest.fn(), count: jest.fn() } };
     emitter = { emit: jest.fn() };
     metrics = createMetricsMock();
     // ค่า default: กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1
@@ -61,6 +61,7 @@ describe('TelemetryService', () => {
 
   it('find ประกอบ where จาก serial + ช่วงเวลา และจำกัด limit', async () => {
     prisma.logDays.findMany.mockResolvedValue([]);
+    prisma.logDays.count.mockResolvedValue(0);
     await service.find({
       serial: 'SN-1',
       from: '2026-07-01T00:00:00Z',
@@ -77,6 +78,7 @@ describe('TelemetryService', () => {
 
   it('find ใช้ default limit 100 เมื่อไม่ระบุ', async () => {
     prisma.logDays.findMany.mockResolvedValue([]);
+    prisma.logDays.count.mockResolvedValue(0);
     await service.find({});
     expect(prisma.logDays.findMany.mock.calls[0][0].take).toBe(100);
   });

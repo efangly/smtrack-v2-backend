@@ -8,12 +8,15 @@ import {
   ParseFilePipe,
   Post,
   Put,
+  Query,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
 import { memoryStorage } from 'multer';
 import { DeviceAssignments, Devices } from '../generated/prisma/client';
 import { DeviceAssignmentService, SwapResult } from './device-assignment.service';
@@ -25,6 +28,9 @@ import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
+import { JwtPayloadDto } from '../common/dto/payload.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { Paginated } from '../common/pagination/paginated.dto';
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
@@ -43,7 +49,8 @@ const uploadedImagePipe = () =>
     fileIsRequired: false,
   });
 
-// หมายเหตุ: ไม่ guard controller นี้ เพื่อคงพฤติกรรมเดิมของ smtrack-log (device controller ไม่มี guard)
+// หมายเหตุ: GET routes ไม่ guard เพื่อคงพฤติกรรมเดิมของ smtrack-log
+// ส่วน create/update guard ด้วย JwtAuthGuard เพื่อให้มี actor จาก JWT สำหรับบันทึก device audit เสมอ
 @ApiTags('devices')
 @Controller('devices')
 export class DeviceController {
@@ -53,6 +60,8 @@ export class DeviceController {
   ) {}
 
   @Post()
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
   @UseInterceptors(imageFileInterceptor())
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -77,14 +86,15 @@ export class DeviceController {
   })
   create(
     @Body() dto: CreateDeviceDto,
+    @Req() req: Request & { user: JwtPayloadDto },
     @UploadedFile(uploadedImagePipe()) file?: Express.Multer.File,
   ): Promise<Devices> {
-    return this.deviceService.create(dto, file);
+    return this.deviceService.create(dto, file, req.user);
   }
 
   @Get()
-  findAll(): Promise<Devices[]> {
-    return this.deviceService.findAll();
+  findAll(@Query() pagination: PaginationQueryDto): Promise<Paginated<Devices>> {
+    return this.deviceService.findAll(pagination);
   }
 
   @Get(':serial')
@@ -108,8 +118,12 @@ export class DeviceController {
   @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER, Role.SERVICE, Role.ADMIN)
-  swap(@Param('staticName') staticName: string, @Body() dto: SwapDeviceDto): Promise<SwapResult> {
-    return this.assignments.swapByStaticName(staticName, dto.serial, dto.reason);
+  swap(
+    @Param('staticName') staticName: string,
+    @Body() dto: SwapDeviceDto,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<SwapResult> {
+    return this.assignments.swapByStaticName(staticName, dto.serial, dto.reason, req.user);
   }
 
   /** ประวัติการติดตั้งของจุดติดตั้ง — กล่องไหนอยู่ช่วงเวลาใด */
@@ -122,6 +136,8 @@ export class DeviceController {
   }
 
   @Put(':id')
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
   @UseInterceptors(imageFileInterceptor())
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -146,8 +162,9 @@ export class DeviceController {
   update(
     @Param('id') id: string,
     @Body() dto: UpdateDeviceDto,
+    @Req() req: Request & { user: JwtPayloadDto },
     @UploadedFile(uploadedImagePipe()) file?: Express.Multer.File,
   ): Promise<Devices> {
-    return this.deviceService.update(id, dto, file);
+    return this.deviceService.update(id, dto, file, req.user);
   }
 }

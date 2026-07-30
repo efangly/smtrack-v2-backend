@@ -2,7 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeviceAssignments, Devices } from '../generated/prisma/client';
 import { AppEvents } from '../common/events/app-events';
-import { buildDeviceChangedEvent } from '../common/events/device-changed.event';
+import { DeviceChangeActor, buildDeviceChangedEvent } from '../common/events/device-changed.event';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 
@@ -70,7 +70,12 @@ export class DeviceAssignmentService {
    * ปิด assignment ของกล่องที่จุดอื่นด้วย เพื่อรองรับเคสกล่องที่ซ่อมเสร็จแล้วย้ายมาจุดใหม่
    * (ถ้าไม่ปิด partial unique index `device_assignments_active_serial` จะกันไว้เอง)
    */
-  async assign(deviceId: string, serial: string, reason?: string): Promise<SwapResult> {
+  async assign(
+    deviceId: string,
+    serial: string,
+    reason?: string,
+    actor?: DeviceChangeActor,
+  ): Promise<SwapResult> {
     const result = await this.prisma.$transaction(async (tx) => {
       const device = await tx.devices.findUnique({ where: { id: deviceId } });
       if (!device) throw new NotFoundException(`Device ${deviceId} not found`);
@@ -127,17 +132,21 @@ export class DeviceAssignmentService {
 
     // เท่ากันแปลว่าไม่มีอะไรเปลี่ยน (เส้นทาง no-op ด้านบน) ไม่ต้องกวน client
     if (result.previousSerial !== serial) {
-      this.emitChanged(result.device, result.previousSerial);
+      this.emitChanged(result.device, result.previousSerial, actor);
     }
     return result;
   }
 
   /** push การสลับกล่องเข้า sse — ห้ามให้ listener ที่พังทำให้ swap ที่ commit ไปแล้วโยน error */
-  private emitChanged(device: Devices, previousSerial: string | null): void {
+  private emitChanged(
+    device: Devices,
+    previousSerial: string | null,
+    actor?: DeviceChangeActor,
+  ): void {
     try {
       this.events.emit(
         AppEvents.DEVICE_CHANGED,
-        buildDeviceChangedEvent('swapped', device, previousSerial),
+        buildDeviceChangedEvent('swapped', device, previousSerial, actor),
       );
     } catch (err) {
       this.logger.warn(`emit device.changed (swapped) ล้มเหลว: ${(err as Error).message}`);
@@ -145,13 +154,18 @@ export class DeviceAssignmentService {
   }
 
   /** สลับเครื่องโดยอ้างจุดติดตั้งด้วย staticName ซึ่งเป็น identity ถาวรที่หน้างานใช้จริง */
-  async swapByStaticName(staticName: string, serial: string, reason?: string): Promise<SwapResult> {
+  async swapByStaticName(
+    staticName: string,
+    serial: string,
+    reason?: string,
+    actor?: DeviceChangeActor,
+  ): Promise<SwapResult> {
     const device = await this.prisma.devices.findUnique({
       where: { staticName },
       select: { id: true },
     });
     if (!device) throw new NotFoundException(`Device ${staticName} not found`);
-    return this.assign(device.id, serial, reason);
+    return this.assign(device.id, serial, reason, actor);
   }
 
   /**

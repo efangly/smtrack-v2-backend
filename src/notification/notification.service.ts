@@ -11,6 +11,9 @@ import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
+import { NotificationQueryDto } from './dto/query-notification.dto';
+import { Paginated } from '../common/pagination/paginated.dto';
+import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
 const bySerialKey = (serial: string) => `notification:${serial}`;
 
@@ -143,34 +146,35 @@ export class NotificationService {
 
   /** paginated/filtered list — role scoping ตาม ward เท่านั้น (hospital ตัดออกแล้วใน v2 schema) */
   async findAll(
-    filter: string | undefined,
-    page: number,
-    perpage: number,
+    query: NotificationQueryDto,
     user: JwtPayloadDto,
-  ): Promise<Notifications[]> {
+  ): Promise<Paginated<Notifications>> {
     const { conditions, key } = this.findCondition(user);
-    const cacheKey = `${key}:${page}:${perpage}`;
+    const cacheKey = `${key}:${query.page ?? 1}:${query.limit ?? 20}`;
+    const take = query.limit ?? 20;
+    const skip = paginationSkip(query);
 
     let where = conditions;
-    if (filter) {
-      const contains = this.filterToMessageContains(filter);
+    if (query.filter) {
+      const contains = this.filterToMessageContains(query.filter);
       where = { ...where, message: { contains } };
-      return this.prisma.notifications.findMany({
-        take: perpage,
-        skip: (page - 1) * perpage,
-        where,
-        orderBy: { createAt: 'desc' },
-      });
+      const [data, total] = await Promise.all([
+        this.prisma.notifications.findMany({ take, skip, where, orderBy: { createAt: 'desc' } }),
+        this.prisma.notifications.count({ where }),
+      ]);
+      return toPaginated(data, total, query);
     }
 
-    return this.redis.getOrSet(cacheKey, 15, () =>
-      this.prisma.notifications.findMany({
-        take: perpage,
-        skip: (page - 1) * perpage,
-        where,
-        orderBy: { createAt: 'desc' },
-      }),
-    );
+    // เก็บ cache เป็น {data, total} ธรรมดา ไม่ใช่ instance ของ Paginated เพราะ getOrSet
+    // เขียน/อ่านผ่าน JSON.stringify/parse ทำให้ instanceof เช็คไม่ผ่านตอน cache hit
+    const { data, total } = await this.redis.getOrSet(cacheKey, 15, async () => {
+      const [data, total] = await Promise.all([
+        this.prisma.notifications.findMany({ take, skip, where, orderBy: { createAt: 'desc' } }),
+        this.prisma.notifications.count({ where }),
+      ]);
+      return { data, total };
+    });
+    return toPaginated(data, total, query);
   }
 
   async findCount(user: JwtPayloadDto): Promise<NotificationDashboardCount> {

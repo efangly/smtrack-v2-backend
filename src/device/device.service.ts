@@ -4,15 +4,24 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Devices } from '../generated/prisma/client';
 import { AppEvents } from '../common/events/app-events';
-import { DeviceChangeAction, buildDeviceChangedEvent } from '../common/events/device-changed.event';
+import {
+  DeviceChangeAction,
+  DeviceChangeActor,
+  buildDeviceChangedEvent,
+} from '../common/events/device-changed.event';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { DeviceAssignmentService } from './device-assignment.service';
 import { DeviceImageStorageService } from './device-image-storage.service';
 import { CreateDeviceDto } from './dto/create-device.dto';
 import { UpdateDeviceDto } from './dto/update-device.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { Paginated } from '../common/pagination/paginated.dto';
+import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
-const ALL_KEY = 'device:all';
+const ALL_KEY_PREFIX = 'device:all';
+const allKey = (pagination: PaginationQueryDto) =>
+  `${ALL_KEY_PREFIX}:${pagination.page ?? 1}:${pagination.limit ?? 20}`;
 const oneKey = (serial: string) => `device:${serial}`;
 
 /** include กล่องที่ติดตั้งอยู่ปัจจุบันเสมอ เพื่อให้ client ยังเห็น firmware/token เหมือนก่อนแยกตาราง */
@@ -36,9 +45,16 @@ export class DeviceService {
    * EventEmitter2 เรียก listener แบบ sync — ถ้า listener โยน error มันจะเด้งกลับมาที่ caller
    * จึงต้องกลืนไว้ตรงนี้ ไม่ให้ push realtime พังแล้วทำให้ mutation ที่ commit ไปแล้วพังตาม
    */
-  private emitChanged(action: DeviceChangeAction, device: Devices): void {
+  private emitChanged(
+    action: DeviceChangeAction,
+    device: Devices,
+    actor?: DeviceChangeActor,
+  ): void {
     try {
-      this.events.emit(AppEvents.DEVICE_CHANGED, buildDeviceChangedEvent(action, device));
+      this.events.emit(
+        AppEvents.DEVICE_CHANGED,
+        buildDeviceChangedEvent(action, device, undefined, actor),
+      );
     } catch (err) {
       this.logger.warn(`emit device.changed (${action}) ล้มเหลว: ${(err as Error).message}`);
     }
@@ -50,7 +66,11 @@ export class DeviceService {
    * `firmware`/`token`/`installDate` เป็นคุณสมบัติของกล่อง ไม่ใช่ของจุดติดตั้ง จึงถูกแยกออกจาก dto
    * ไปเขียนลงตาราง hardware แทน (API ภายนอกยังรับหน้าตาเดิม)
    */
-  async create(dto: CreateDeviceDto, file?: Express.Multer.File): Promise<Devices> {
+  async create(
+    dto: CreateDeviceDto,
+    file?: Express.Multer.File,
+    actor?: DeviceChangeActor,
+  ): Promise<Devices> {
     const { serial, firmware, installDate, ...deviceFields } = dto;
     const positionPic = file ? await this.uploadImage(serial, file) : undefined;
 
@@ -78,8 +98,8 @@ export class DeviceService {
       });
 
       await this.assignments.invalidate(serial);
-      await this.redis.del(ALL_KEY);
-      this.emitChanged('created', device);
+      await this.redis.delByPattern(`${ALL_KEY_PREFIX}:*`);
+      this.emitChanged('created', device, actor);
       return device;
     } catch (err) {
       if (positionPic) await this.imageStorage.delete(positionPic);
@@ -92,10 +112,22 @@ export class DeviceService {
     return this.imageStorage.upload(key, file.buffer, file.mimetype);
   }
 
-  findAll(): Promise<Devices[]> {
-    return this.redis.getOrSet(ALL_KEY, 300, () =>
-      this.prisma.devices.findMany({ include: WITH_HARDWARE, orderBy: { seq: 'asc' } }),
-    );
+  async findAll(pagination: PaginationQueryDto): Promise<Paginated<Devices>> {
+    // เก็บ cache เป็น {data, total} ธรรมดา ไม่ใช่ instance ของ Paginated เพราะ getOrSet
+    // เขียน/อ่านผ่าน JSON.stringify/parse ทำให้ instanceof เช็คไม่ผ่านตอน cache hit
+    const { data, total } = await this.redis.getOrSet(allKey(pagination), 300, async () => {
+      const [data, total] = await Promise.all([
+        this.prisma.devices.findMany({
+          include: WITH_HARDWARE,
+          orderBy: { seq: 'asc' },
+          skip: paginationSkip(pagination),
+          take: pagination.limit ?? 20,
+        }),
+        this.prisma.devices.count(),
+      ]);
+      return { data, total };
+    });
+    return toPaginated(data, total, pagination);
   }
 
   /** หาด้วย serial ของกล่องที่ติดตั้งอยู่ปัจจุบัน (พฤติกรรมเดิมของ GET /devices/:serial) */
@@ -141,7 +173,7 @@ export class DeviceService {
       include: WITH_HARDWARE,
     });
     await this.redis.del(oneKey(serial));
-    await this.redis.del(ALL_KEY);
+    await this.redis.delByPattern(`${ALL_KEY_PREFIX}:*`);
 
     if (previous?.online !== online) {
       this.emitChanged(online ? 'online' : 'offline', device);
@@ -156,7 +188,12 @@ export class DeviceService {
    * เท่านั้น ไม่งั้น pointer จะเปลี่ยนโดยไม่มี assignment รองรับ และประวัติจะขาด
    * ส่วน `firmware`/`installDate` เป็นของกล่อง จึงเขียนลง hardware แทน
    */
-  async update(serial: string, dto: UpdateDeviceDto, file?: Express.Multer.File): Promise<Devices> {
+  async update(
+    serial: string,
+    dto: UpdateDeviceDto,
+    file?: Express.Multer.File,
+    actor?: DeviceChangeActor,
+  ): Promise<Devices> {
     const { serial: _unusedSerial, firmware, installDate, ...deviceFields } = dto;
     void _unusedSerial;
 
@@ -187,7 +224,7 @@ export class DeviceService {
     }
 
     await this.redis.del(oneKey(serial));
-    await this.redis.del(ALL_KEY);
+    await this.redis.delByPattern(`${ALL_KEY_PREFIX}:*`);
     // ward เปลี่ยนได้จาก dto นี้ — ต้องล้าง cache serial→ward ที่ SSE ใช้กรอง ไม่งั้น
     // client ward เดิมจะยังเห็น event ของเครื่องที่ย้ายออกไปแล้วจนกว่า TTL จะหมด
     await this.assignments.invalidate(serial);
@@ -196,7 +233,7 @@ export class DeviceService {
       await this.imageStorage.delete(previousPositionPic);
     }
 
-    this.emitChanged('updated', device);
+    this.emitChanged('updated', device, actor);
     return device;
   }
 }

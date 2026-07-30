@@ -38,6 +38,28 @@ export interface SeedablePrisma {
     }): Promise<{ count: number }>;
     deleteMany(args: { where: object }): Promise<{ count: number }>;
   };
+  deviceAudit: {
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
+  probes: {
+    create(args: { data: ProbeSeed & { deviceId: string } }): Promise<{ id: string }>;
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
+  configs: {
+    create(args: { data: ConfigSeed & { deviceId: string } }): Promise<{ id: string }>;
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
+  repairs: {
+    create(args: { data: RepairSeed }): Promise<{ id: string }>;
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
+  warranties: {
+    create(args: { data: WarrantySeed }): Promise<{ id: string }>;
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
+  userAudit: {
+    deleteMany(args: { where: object }): Promise<{ count: number }>;
+  };
 }
 
 /** ฟิลด์ของ "จุดติดตั้ง" ล้วน ๆ — ไม่รวม serial/firmware ซึ่งเป็นของกล่อง */
@@ -72,6 +94,30 @@ export interface NotificationSeed {
   message: string;
   detail: string;
 }
+
+export interface ProbeSeed {
+  name: string;
+  channel: string;
+}
+
+export interface ConfigSeed {
+  ssid: string;
+}
+
+export interface RepairSeed {
+  serial: string;
+  devName: string;
+  detail: string;
+}
+
+export interface WarrantySeed {
+  serial: string;
+  devName: string;
+  customerName: string;
+}
+
+/** e2e ทั้งหมด auth ด้วย bearerUser() ที่ actorId คงที่ (test/utils/auth.ts DEFAULT_USER.id) */
+export const E2E_ACTOR_ID = 'e2e-user';
 
 /** serial ที่ n ของ prefix — ใช้ pad เพื่อให้เรียงลำดับอ่านง่าย */
 export const serialFor = (prefix: string, n: number): string =>
@@ -168,6 +214,34 @@ export function buildNotifications(serial: string): NotificationSeed[] {
   ];
 }
 
+/** สร้าง probe ผูกกับ deviceId ที่ได้จาก seedDevice() */
+export function seedProbe(
+  prisma: SeedablePrisma,
+  deviceId: string,
+  seed: ProbeSeed = { name: 'P1', channel: '1' },
+): Promise<{ id: string }> {
+  return prisma.probes.create({ data: { ...seed, deviceId } });
+}
+
+/** สร้าง config ผูกกับ deviceId ที่ได้จาก seedDevice() (deviceId เป็น unique key) */
+export function seedConfig(
+  prisma: SeedablePrisma,
+  deviceId: string,
+  seed: ConfigSeed = { ssid: 'RDE3_2.4GHz' },
+): Promise<{ id: string }> {
+  return prisma.configs.create({ data: { ...seed, deviceId } });
+}
+
+/** สร้างรายการซ่อมผูกกับ serial ของกล่อง (ต้องมี hardware แถวนั้นอยู่ก่อน — ผ่าน seedDevice/seedHardware) */
+export function seedRepair(prisma: SeedablePrisma, seed: RepairSeed): Promise<{ id: string }> {
+  return prisma.repairs.create({ data: seed });
+}
+
+/** สร้างรายการประกันผูกกับ serial ของกล่อง (ต้องมี hardware แถวนั้นอยู่ก่อน — ผ่าน seedDevice/seedHardware) */
+export function seedWarranty(prisma: SeedablePrisma, seed: WarrantySeed): Promise<{ id: string }> {
+  return prisma.warranties.create({ data: seed });
+}
+
 /**
  * ลบเฉพาะแถวที่ขึ้นต้นด้วย prefix ตามลำดับ FK
  * log/notification → assignment → device → hardware
@@ -184,14 +258,22 @@ export async function cleanupByPrefix(
     throw new Error('cleanupByPrefix: prefix ว่างไม่ได้ — จะลบข้อมูลทั้งตาราง');
   }
   const where = { serial: { startsWith: prefix } };
+  const deviceWhere = {
+    OR: [{ serial: { startsWith: prefix } }, { staticName: { startsWith: prefix } }],
+  };
   const logs = await prisma.logDays.deleteMany({ where });
   const notifications = await prisma.notifications.deleteMany({ where });
   await prisma.deviceAssignments.deleteMany({ where });
-  const devices = await prisma.devices.deleteMany({
-    where: {
-      OR: [{ serial: { startsWith: prefix } }, { staticName: { startsWith: prefix } }],
-    },
-  });
+  await prisma.deviceAudit.deleteMany({ where: { staticName: { startsWith: prefix } } });
+  // probes/configs ผูก FK กับ devices.id ต้องลบก่อน devices เสมอ
+  await prisma.probes.deleteMany({ where: { device: deviceWhere } });
+  await prisma.configs.deleteMany({ where: { device: deviceWhere } });
+  const devices = await prisma.devices.deleteMany({ where: deviceWhere });
+  // repairs/warranties ผูก FK กับ hardware.serial ต้องลบก่อน hardware เสมอ
+  await prisma.repairs.deleteMany({ where });
+  await prisma.warranties.deleteMany({ where });
   await prisma.hardware.deleteMany({ where });
+  // user_audit ไม่มี FK ไป entity ใด ๆ (จงใจ เหมือน device_audit) จึง scope ด้วย actorId คงที่ของ e2e แทน
+  await prisma.userAudit.deleteMany({ where: { actorId: E2E_ACTOR_ID } });
   return { logs: logs.count, notifications: notifications.count, devices: devices.count };
 }

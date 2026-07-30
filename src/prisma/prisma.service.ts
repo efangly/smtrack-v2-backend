@@ -12,6 +12,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     super({
       adapter: new PrismaPg({
         connectionString: config.get<string>('databaseUrl'),
+        // ไม่ตั้งค่านี้ pg จะไม่มี connect timeout เลย (default 0) — ถ้า DB unreachable
+        // แบบไม่ refuse ทันที (เช่น firewall drop) $connect() จะค้างตลอดไปและทำให้
+        // NestFactory.create() ไม่ resolve → bootstrap ค้างเงียบไม่มี log เลย
+        connectionTimeoutMillis: 10_000,
       }),
     });
   }

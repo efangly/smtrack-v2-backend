@@ -23,6 +23,8 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { DevicePayloadDto } from '../common/dto/device-payload.dto';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
+import { NotificationQueryDto } from './dto/query-notification.dto';
+import { Paginated } from '../common/pagination/paginated.dto';
 
 @ApiTags('notifications')
 @Controller('notifications')
@@ -44,17 +46,10 @@ export class NotificationController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('jwt')
   findAll(
-    @Query('filter') filter: string | undefined,
-    @Query('page') page: string | undefined,
-    @Query('perpage') perpage: string | undefined,
+    @Query() query: NotificationQueryDto,
     @Req() req: Request & { user: JwtPayloadDto },
-  ): Promise<Notifications[]> {
-    return this.notificationService.findAll(
-      filter,
-      parseInt(page ?? '1', 10) || 1,
-      parseInt(perpage ?? '10', 10) || 10,
-      req.user,
-    );
+  ): Promise<Paginated<Notifications>> {
+    return this.notificationService.findAll(query, req.user);
   }
 
   // ต้องมาก่อน :serial ไม่งั้น 'dashboard' จะถูกจับเป็นค่า serial
