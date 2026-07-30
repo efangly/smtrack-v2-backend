@@ -29,7 +29,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { QueryDeviceDto } from './dto/query-device.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
@@ -93,7 +93,7 @@ export class DeviceController {
   }
 
   @Get()
-  findAll(@Query() pagination: PaginationQueryDto): Promise<Paginated<Devices>> {
+  findAll(@Query() pagination: QueryDeviceDto): Promise<Paginated<Devices>> {
     return this.deviceService.findAll(pagination);
   }
 
