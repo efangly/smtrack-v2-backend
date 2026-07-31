@@ -23,12 +23,19 @@ export class MobileService {
     );
   }
 
+  /**
+   * 1 device มีได้หลาย probe จึงต้องคืน "ค่าล่าสุดต่อ probe" ไม่ใช่แถวล่าสุดแถวเดียวของ device
+   * (แบบเดิมได้ค่าของ probe ที่เผอิญส่งมาล่าสุด ตัวอื่นหายไปทั้งหมด)
+   */
   findWard(ward: string): Promise<Devices[]> {
     return this.redis.getOrSet(`mobile:${ward}`, 15, () =>
       this.prisma.devices.findMany({
         where: { ward },
         include: {
-          log: { take: 1, orderBy: { createAt: 'desc' } },
+          probe: {
+            orderBy: { channel: 'asc' },
+            include: { log: { take: 1, orderBy: { sendTime: 'desc' } } },
+          },
           notification: { orderBy: { createAt: 'desc' } },
         },
         orderBy: { seq: 'asc' },

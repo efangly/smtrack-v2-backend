@@ -48,17 +48,58 @@ describe('ProbeService', () => {
 
   it('create สร้าง probe ผูกกับ deviceId จาก param แล้ว emit probe.changed (created)', async () => {
     prisma.probes.create.mockResolvedValue(probe);
+    prisma.probes.findMany.mockResolvedValue([{ channel: '1' }]);
 
     const result = await service.create('dev-1', { name: 'P1' }, actor);
 
     expect(prisma.probes.create).toHaveBeenCalledWith({
-      data: { name: 'P1', deviceId: 'dev-1' },
+      data: { name: 'P1', channel: '2', deviceId: 'dev-1' },
     });
     expect(events.emit).toHaveBeenCalledWith(
       AppEvents.PROBE_CHANGED,
       expect.objectContaining({ action: 'created', probeId: 'probe-1', deviceId: 'dev-1', actor }),
     );
     expect(result).toEqual(probe);
+  });
+
+  describe('create: default channel', () => {
+    beforeEach(() => prisma.probes.create.mockResolvedValue(probe));
+
+    const createdChannel = () => prisma.probes.create.mock.calls[0][0].data.channel;
+
+    it('channel ที่ส่งมาใน dto ชนะการเดาเสมอ', async () => {
+      prisma.probes.findMany.mockResolvedValue([{ channel: '1' }, { channel: '2' }]);
+
+      await service.create('dev-1', { channel: '7' });
+
+      expect(createdChannel()).toBe('7');
+      // ไม่ต้องไปนับช่องเลยเมื่อผู้ใช้ระบุมาแล้ว
+      expect(prisma.probes.findMany).not.toHaveBeenCalled();
+    });
+
+    it('ไม่ส่ง channel → ได้ช่องถัดไปจากเลขที่มากสุด', async () => {
+      prisma.probes.findMany.mockResolvedValue([{ channel: '1' }, { channel: '3' }]);
+
+      await service.create('dev-1', {});
+
+      expect(createdChannel()).toBe('4');
+    });
+
+    it('device ที่ยังไม่มี probe เลย → เริ่มที่ 1', async () => {
+      prisma.probes.findMany.mockResolvedValue([]);
+
+      await service.create('dev-1', {});
+
+      expect(createdChannel()).toBe('1');
+    });
+
+    it('channel ที่ไม่ใช่ตัวเลขไม่ถูกนับ (อุปกรณ์บางรุ่นส่งชื่อช่องเป็นตัวอักษร)', async () => {
+      prisma.probes.findMany.mockResolvedValue([{ channel: 'A' }, { channel: '2' }]);
+
+      await service.create('dev-1', {});
+
+      expect(createdChannel()).toBe('3');
+    });
   });
 
   it('findAllByDevice คืน probe ทั้งหมดของ device นั้น พร้อม pagination meta', async () => {
@@ -112,6 +153,7 @@ describe('ProbeService', () => {
 
   it('emit ที่ throw ไม่ทำให้ mutation ล้มเหลว', async () => {
     prisma.probes.create.mockResolvedValue(probe);
+    prisma.probes.findMany.mockResolvedValue([]);
     events.emit.mockImplementation(() => {
       throw new Error('listener boom');
     });

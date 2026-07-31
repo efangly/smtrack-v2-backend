@@ -9,7 +9,13 @@ import { ArchiveRestoreService } from '../src/backup/archive-restore.service';
 import { ObjectStorageService } from '../src/backup/object-storage.service';
 import { archiveObjectKey, metaObjectKey, MonthString } from '../src/backup/archive.util';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { buildDevices, cleanupByPrefix, seedDevice, serialFor } from './fixtures/seed-data';
+import {
+  buildDevices,
+  cleanupByPrefix,
+  seedDevice,
+  seedProbe,
+  serialFor,
+} from './fixtures/seed-data';
 
 /**
  * เทสนี้คุย MinIO/Postgres จริงตาม .env — BackupModule ไม่ถูก stub เลย (ต่างจาก
@@ -32,6 +38,10 @@ describe('Backup archive export/restore (e2e, real MinIO + Postgres)', () => {
   let restorer: ArchiveRestoreService;
   let storage: ObjectStorageService;
 
+  /** ตั้งค่าใน beforeAll — log ต้องผูก deviceId/probeId ให้ครบเพื่อพิสูจน์ว่า COPY พาไปด้วย */
+  let deviceId: string;
+  let probeId: string;
+
   function buildArchiveLogs() {
     return Array.from({ length: rowCount }, (_, i) => {
       const sendTime = new Date(Date.UTC(2020, 0, 1 + i, 12, 0, 0));
@@ -48,6 +58,8 @@ describe('Backup archive export/restore (e2e, real MinIO + Postgres)', () => {
         internet: true,
         probe: '1',
         battery: 100 - (i % 40),
+        deviceId,
+        probeId,
       };
     });
   }
@@ -86,7 +98,8 @@ describe('Backup archive export/restore (e2e, real MinIO + Postgres)', () => {
     await cleanupAll();
 
     const [device] = buildDevices(PREFIX);
-    await seedDevice(prisma, device);
+    ({ deviceId } = await seedDevice(prisma, device));
+    ({ id: probeId } = await seedProbe(prisma, deviceId, { name: 'P1', channel: '1' }));
     await prisma.logDays.createMany({ data: buildArchiveLogs() });
   });
 
@@ -139,6 +152,10 @@ describe('Backup archive export/restore (e2e, real MinIO + Postgres)', () => {
       expect(row.temp).toBeCloseTo(original[i].temp, 5);
       expect(row.humidity).toBeCloseTo(original[i].humidity, 5);
       expect(row.battery).toBe(original[i].battery);
+      // device_id/probe_id ต้องรอด export -> CSV -> restore ไม่งั้น report ที่คร่อม
+      // retention boundary จะแยกเส้นต่อ probe ไม่ได้
+      expect(row.deviceId).toBe(deviceId);
+      expect(row.probeId).toBe(probeId);
     });
   });
 

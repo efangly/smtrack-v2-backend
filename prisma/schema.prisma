@@ -89,6 +89,9 @@ model DeviceAssignments {
 /// ตั้งค่า threshold/แจ้งเตือนต่อ probe — ยกมาจาก smtrack-device
 /// ผูกกับ "จุดติดตั้ง" (Devices.id) ไม่ใช่กล่อง เพราะเป็นค่าที่ตั้งตามหน้างาน
 /// เมื่อสลับกล่องใหม่เข้าจุดเดิม ค่าเหล่านี้จึงกลับมาใช้ได้ทันทีโดยไม่ต้องตั้งใหม่
+///
+/// `channel` คือช่องที่อุปกรณ์อ้างถึงตัวเองใน payload (`LogDays.probe`) — เป็น business key
+/// คู่กับ `deviceId` จึงต้อง unique เพื่อให้ resolve `probeId` ตอน ingest ได้แบบ deterministic
 model Probes {
   id                    String   @id @default(uuid()) @map("id")
   deviceId              String   @map("device_id")
@@ -119,10 +122,13 @@ model Probes {
   secondTime            String?  @default("0000") @map("second_time")
   thirdTime             String?  @default("0000") @map("third_time")
   device                Devices  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  log                   LogDays[]
+  notification          Notifications[]
   createAt              DateTime @default(now()) @map("create_at")
   updateAt              DateTime @default(now()) @updatedAt @map("update_at")
 
-  @@index([deviceId])
+  // แทน @@index([deviceId]) เดิม — เป็น prefix ของ unique นี้อยู่แล้ว จึงซ้ำซ้อน
+  @@unique([deviceId, channel])
   @@map("probes")
 }
 
@@ -231,18 +237,25 @@ model LogDays {
   door2           Boolean  @default(false) @map("door2")
   door3           Boolean  @default(false) @map("door3")
   internet        Boolean  @default(false) @map("internet")
+  /// channel ดิบตามที่อุปกรณ์ส่งมา — คงไว้เป็น denormalized fallback สำหรับแถวที่ resolve
+  /// `probeId` ไม่ได้ (กล่องยังไม่ถูกติดตั้ง) และเป็นตัวตั้งต้นของการ backfill
   probe           String   @default("1") @map("probe")
   battery         Int      @default(0) @map("battery")
   tempInternal    Float?   @default(0.00) @map("temp_internal")
   extMemory       Boolean  @default(false) @map("ext_memory")
   deviceId        String?  @map("device_id")
+  /// probe ที่ log แถวนี้มาจาก — nullable ด้วยเหตุผลเดียวกับ `deviceId`: กล่องที่ยังไม่ถูก
+  /// ติดตั้งที่จุดไหน (เพิ่งซ่อมเสร็จ/อยู่ในคลัง) ไม่มี Probes ให้ผูก แต่ยังต้องเก็บ log ได้
+  probeId         String?  @map("probe_id")
   hardware        Hardware @relation(fields: [serial], references: [serial])
   device          Devices? @relation(fields: [deviceId], references: [id])
+  probeRef        Probes?  @relation(fields: [probeId], references: [id], onDelete: SetNull)
   createAt        DateTime @default(now()) @map("create_at")
   updateAt        DateTime @default(now()) @updatedAt @map("update_at")
 
   @@index([serial, sendTime])
   @@index([deviceId, sendTime])
+  @@index([deviceId, probeId, sendTime])
   @@map("log_days")
 }
 
@@ -257,13 +270,20 @@ model Notifications {
   deliveredSse Boolean  @default(false) @map("delivered_sse") // ส่งผ่าน SSE สำเร็จหรือยัง
   deliveredFcm Boolean  @default(false) @map("delivered_fcm") // ส่งผ่าน FCM สำเร็จหรือยัง
   deviceId     String?  @map("device_id")
+  /// probe ที่เป็นต้นเหตุของการแจ้งเตือน — 1 device มีหลาย probe การแจ้งเตือนอุณหภูมิเกินช่วง
+  /// จึงต้องบอกได้ว่า probe ไหน nullable ด้วยเหตุผลเดียวกับ LogDays.probeId
+  probeId      String?  @map("probe_id")
+  /// channel ดิบตามที่อุปกรณ์ส่งมา — fallback เมื่อ resolve probeId ไม่ได้
+  probe        String?  @map("probe")
   hardware     Hardware @relation(fields: [serial], references: [serial])
   device       Devices? @relation(fields: [deviceId], references: [id])
+  probeRef     Probes?  @relation(fields: [probeId], references: [id], onDelete: SetNull)
   createAt     DateTime @default(now()) @map("create_at")
   updateAt     DateTime @default(now()) @updatedAt @map("update_at")
 
   @@index([serial, createAt])
   @@index([deviceId, createAt])
+  @@index([probeId, createAt])
   @@map("notifications")
 }
 
@@ -286,12 +306,15 @@ model LogDayArchive {
   battery         Int      @default(0) @map("battery")
   tempInternal    Float?   @default(0.00) @map("temp_internal")
   extMemory       Boolean  @default(false) @map("ext_memory")
-  // ไม่มี FK ไป Devices ด้วยเหตุผลเดียวกับ serial — ข้อมูล archive ต้องอยู่ต่อได้แม้ device ถูกลบ
+  // ไม่มี FK ไป Devices/Probes ด้วยเหตุผลเดียวกับ serial — ข้อมูล archive ต้องอยู่ต่อได้แม้
+  // device/probe ถูกลบ (จึงเป็นแค่ String เปล่า ไม่ประกาศ relation)
   deviceId        String?  @map("device_id")
+  probeId         String?  @map("probe_id")
   createAt        DateTime @default(now()) @map("create_at")
   updateAt        DateTime @default(now()) @updatedAt @map("update_at")
 
   @@index([deviceId, sendTime])
+  @@index([deviceId, probeId, sendTime])
   @@map("log_day_archive")
 }
 
@@ -332,6 +355,24 @@ model UserAudit {
   @@index([actorId, createAt])
   @@index([entityType, entityId, createAt])
   @@map("user_audit")
+}
+
+/// ไฟล์ firmware แต่ละเวอร์ชั่นสำหรับให้อุปกรณ์ IoT ดาวน์โหลด (OTA) — global list ไม่ผูกกับ
+/// device/hardware รุ่นใดรุ่นหนึ่ง เพราะ schema ปัจจุบันไม่มี field รุ่น/model ของอุปกรณ์
+/// ไฟล์จริงเก็บใน S3 แยก bucket (firmware.s3), ตารางนี้เก็บแค่ metadata + object key
+model Firmwares {
+  id          String   @id @default(uuid()) @map("id")
+  version     String   @unique @map("version")
+  name        String   @map("name")
+  description String?  @map("description")
+  fileKey     String   @map("file_key")
+  fileName    String   @map("file_name")
+  fileSize    Int      @map("file_size")
+  checksum    String?  @map("checksum")
+  createAt    DateTime @default(now()) @map("create_at")
+  updateAt    DateTime @default(now()) @updatedAt @map("update_at")
+
+  @@map("firmwares")
 }
 
 // audit ของการ export LogDays รายเดือนขึ้น object storage (กัน export ซ้ำ)

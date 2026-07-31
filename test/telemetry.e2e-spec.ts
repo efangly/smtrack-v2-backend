@@ -122,4 +122,71 @@ describe('Telemetry (e2e)', () => {
 
     expect(res.status).toBe(400);
   });
+
+  describe('ผูก probe ตอน ingest', () => {
+    it('log ที่ ingest ผ่าน service ถูกผูก probe ของ channel นั้น', async () => {
+      const logs = await prisma.logDays.findMany({ where: { serial }, take: 1 });
+
+      expect(logs[0].probeId).not.toBeNull();
+      expect(logs[0].probe).toBe('1');
+
+      const probe = await prisma.probes.findUnique({ where: { id: logs[0].probeId! } });
+      expect(probe!.channel).toBe('1');
+    });
+
+    it('channel ที่ยังไม่มี probe → auto-provision probe ใหม่แล้วผูกให้', async () => {
+      const before = await prisma.probes.count({ where: { device: { serial } } });
+
+      const log = await telemetry.ingest({ serial, probe: '9', temp: 5 });
+
+      expect(log.probeId).not.toBeNull();
+      const after = await prisma.probes.count({ where: { device: { serial } } });
+      expect(after).toBe(before + 1);
+
+      const created = await prisma.probes.findUnique({ where: { id: log.probeId! } });
+      expect(created).toMatchObject({ channel: '9', name: 'P9' });
+    });
+
+    it('ingest ซ้ำ channel เดิม → ใช้ probe เดิม ไม่สร้างเพิ่ม', async () => {
+      const first = await telemetry.ingest({ serial, probe: '8', temp: 5 });
+      const countAfterFirst = await prisma.probes.count({ where: { device: { serial } } });
+
+      const second = await telemetry.ingest({ serial, probe: '8', temp: 6 });
+
+      expect(second.probeId).toBe(first.probeId);
+      expect(await prisma.probes.count({ where: { device: { serial } } })).toBe(countAfterFirst);
+    });
+
+    it('GET /telemetry?probeId= คืนเฉพาะ log ของ probe นั้น', async () => {
+      const log = await telemetry.ingest({ serial, probe: '7', temp: 5 });
+
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/telemetry`)
+        .query({ serial, probeId: log.probeId! });
+
+      expect(res.status).toBe(200);
+      const rows = unwrap(res.body);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) expect(r.probeId).toBe(log.probeId);
+    });
+
+    it('GET /telemetry?probe= กรองด้วย channel ดิบได้', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/telemetry`)
+        .query({ serial, probe: '9' });
+
+      expect(res.status).toBe(200);
+      const rows = unwrap(res.body);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) expect(r.probe).toBe('9');
+    });
+
+    it('ปฏิเสธ probeId ที่ไม่ใช่ uuid', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/telemetry`)
+        .query({ serial, probeId: 'ไม่ใช่ uuid' });
+
+      expect(res.status).toBe(400);
+    });
+  });
 });

@@ -1,7 +1,7 @@
 {
  "info": {
   "name": "SMtrack v2 Backend",
-  "description": "REST API collection สำหรับ SMtrack v2 backend (NestJS, IoT telemetry/notification ผ่าน MQTT + TimescaleDB).\n\nอัปเดตล่าสุด: เพิ่ม global prefix `/log`, ทุก response ห่อด้วย ResponseInterceptor รูปแบบ `{success, message, data, timestamp, statusCode}` (endpoint `/log/health` ยกเว้นเพราะ @SkipInterceptor), error response เป็น `{message, success:false, data:null, traceStack}` (traceStack โผล่เฉพาะ NODE_ENV=development), และ auth guard ถูกผูกใช้งานจริงแล้ว:\n- **JwtAuthGuard** (`Authorization: Bearer {{jwtToken}}`) — JWT verify ด้วย JWT_SECRET, payload ต้องมี `role` เป็นหนึ่งใน SUPER/SERVICE/ADMIN/USER/LEGACY_ADMIN/LEGACY_USER/GUEST\n- **DeviceJwtAuthGuard** (`Authorization: Bearer {{deviceJwtToken}}`) — JWT verify ด้วย DEVICE_SECRET, payload ต้องมี `sn` (serial ของอุปกรณ์ — controller จะ overwrite serial ใน body ด้วยค่านี้เสมอ ไม่เชื่อ serial ที่ client ส่งมา)\n- **RolesGuard** (`@Roles(...)`) — ต่อจาก JwtAuthGuard อีกชั้น เช็ค `role` ใน payload ตรงกับที่ endpoint กำหนด ไม่ตรงจะได้ 403\n\nสร้าง token ทดสอบได้ที่ jwt.io: เลือก algorithm HS256, ใส่ secret เป็นค่า JWT_SECRET/DEVICE_SECRET จาก .env, payload ตามที่ endpoint นั้นต้องการ (ดู description แต่ละ request)\n\nไม่รวม MQTT/RabbitMQ @EventPattern handlers (mqtt.controller.ts, consumer.controller.ts) เพราะไม่ใช่ REST endpoint",
+  "description": "REST API collection สำหรับ SMtrack v2 backend (NestJS, IoT telemetry/notification ผ่าน MQTT + TimescaleDB).\n\nอัปเดตล่าสุด: sync ครบทุก module ที่มีในโค้ดปัจจุบัน (เพิ่ม Audit, Probe, Device Config, Device Repair, Warranties, Firmware, User Audit, device swap/assignment history, SSE devices/multi-channel stream) — global prefix `/log`, ทุก response ห่อด้วย ResponseInterceptor รูปแบบ `{success, message, data, timestamp, statusCode}` (ยกเว้น endpoint ที่มี @SkipInterceptor เช่น /log/health, firmware download, ทุก SSE stream), error response เป็น `{message, success:false, data:null, traceStack}` (traceStack โผล่เฉพาะ NODE_ENV=development)\n\nAuth guard ที่ใช้งานจริง:\n- **JwtAuthGuard** (`Authorization: Bearer {{jwtToken}}`) — JWT verify ด้วย JWT_SECRET, payload ต้องมี `role` เป็นหนึ่งใน SUPER/SERVICE/ADMIN/USER/LEGACY_ADMIN/LEGACY_USER/GUEST\n- **DeviceJwtAuthGuard** (`Authorization: Bearer {{deviceJwtToken}}`) — JWT verify ด้วย DEVICE_SECRET, payload ต้องมี `sn` (serial ของอุปกรณ์ — controller จะ overwrite serial ใน body ด้วยค่านี้เสมอ ไม่เชื่อ serial ที่ client ส่งมา)\n- **RolesGuard** (`@Roles(...)`) — ต่อจาก JwtAuthGuard อีกชั้น เช็ค `role` ใน payload ตรงกับที่ endpoint กำหนด ไม่ตรงจะได้ 403\n- **SseAuthGuard** — เหมือน JwtAuthGuard แต่รับ token ได้ทั้ง header และ `?token=` query (เผื่อ EventSource ที่ตั้ง header ไม่ได้)\n\nสร้าง token ทดสอบได้ที่ jwt.io: เลือก algorithm HS256, ใส่ secret เป็นค่า JWT_SECRET/DEVICE_SECRET จาก .env, payload ตามที่ endpoint นั้นต้องการ (ดู description แต่ละ request)\n\nไม่รวม MQTT/RabbitMQ @EventPattern/@MessagePattern handlers (mqtt.controller.ts, consumer/*.controller.ts) เพราะไม่ใช่ REST endpoint",
   "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
  },
  "auth": {
@@ -36,13 +36,61 @@
    "key": "serial",
    "value": "DEV-001",
    "type": "string",
-   "description": "serial ของ device ที่มีอยู่แล้ว ใช้กับ GET/notification/telemetry/logday/graph"
+   "description": "serial ของกล่องฮาร์ดแวร์ที่มีอยู่แล้ว ใช้กับ GET/notification/telemetry/logday/graph/repairs/warranties"
   },
   {
    "key": "newDeviceSerial",
    "value": "TEST-POSTMAN-001",
    "type": "string",
-   "description": "serial ใหม่ที่ยังไม่มีในระบบ ใช้กับ POST /devices เท่านั้น (POST ด้วย serial ที่ซ้ำจะได้ 409 Conflict)"
+   "description": "serial ใหม่ที่ยังไม่มีในระบบ ใช้กับ POST /devices และ swap เท่านั้น (POST ด้วย serial ที่ซ้ำจะได้ 409 Conflict)"
+  },
+  {
+   "key": "staticName",
+   "value": "OPD-01",
+   "type": "string",
+   "description": "staticName (identity ถาวรของจุดติดตั้ง) ที่มีอยู่แล้ว ใช้กับ GET/swap/assignments/audit by static name"
+  },
+  {
+   "key": "deviceId",
+   "value": "",
+   "type": "string",
+   "description": "Devices.id (uuid ของจุดติดตั้ง) ที่มีอยู่แล้ว ใช้กับ probes/config ที่ผูกกับจุดติดตั้ง"
+  },
+  {
+   "key": "probeId",
+   "value": "",
+   "type": "string",
+   "description": "id ของ probe ที่มีอยู่แล้ว ใช้กับ GET/PUT/DELETE /probes/:id และเป็น filter ของ GET /telemetry?probeId= / GET /graph/:serialOrName?probeId="
+  },
+  {
+   "key": "repairId",
+   "value": "",
+   "type": "string",
+   "description": "id ของประวัติซ่อมที่มีอยู่แล้ว ใช้กับ GET/PUT /repairs/:id"
+  },
+  {
+   "key": "warrantyId",
+   "value": "",
+   "type": "string",
+   "description": "id ของรายการประกันที่มีอยู่แล้ว ใช้กับ GET/PUT /warranties/:id"
+  },
+  {
+   "key": "firmwareId",
+   "value": "",
+   "type": "string",
+   "description": "id ของ firmware record ที่มีอยู่แล้ว ใช้กับ GET/PUT/DELETE /firmware/:id"
+  },
+  {
+   "key": "firmwareVersion",
+   "value": "1.0.0-postman",
+   "type": "string",
+   "description": "version string ที่ยังไม่มีในระบบ ใช้กับ POST /firmware (unique) และ GET /firmware/download/:version"
+  },
+  {
+   "key": "actorId",
+   "value": "e2e-user",
+   "type": "string",
+   "description": "id ผู้ใช้ (จาก JWT payload.id) ใช้กับ GET /users/:actorId/audit"
   },
   {
    "key": "logId",
@@ -101,9 +149,6 @@
     {
      "name": "Create device",
      "request": {
-      "auth": {
-       "type": "noauth"
-      },
       "method": "POST",
       "header": [],
       "body": {
@@ -121,7 +166,7 @@
         },
         {
          "key": "staticName",
-         "value": "Fridge 1",
+         "value": "{{staticName}}",
          "type": "text"
         },
         {
@@ -155,6 +200,21 @@
          "type": "text"
         },
         {
+         "key": "location",
+         "value": "",
+         "type": "text"
+        },
+        {
+         "key": "tag",
+         "value": "",
+         "type": "text"
+        },
+        {
+         "key": "installDate",
+         "value": "",
+         "type": "text"
+        },
+        {
          "key": "positionPic",
          "type": "file",
          "src": [],
@@ -172,7 +232,7 @@
         "devices"
        ]
       },
-      "description": "Body ตาม CreateDeviceDto ส่งเป็น multipart/form-data (ไม่ใช่ JSON) เพราะรองรับอัพโหลดรูปอุปกรณ์ — required: serial, ward, staticName, status, seq (int), firmware. Optional: name, remark, position, positionPic (ไฟล์รูป jpg/png/webp ≤5MB — ถ้าไม่แนบ ให้เปิด field นี้ทิ้งว่าง/ปิดไว้ก็ได้ เพราะเป็น optional, อัพโหลดสำเร็จแล้ว server จะ set path ให้เอง ไม่ต้องส่ง positionPic เป็น string เข้ามา). ใช้ {{newDeviceSerial}} เพื่อเลี่ยง 409 Conflict หาก serial ซ้ำของเดิม\n\nไม่ guard (คงพฤติกรรมเดิมจาก smtrack-log — DeviceController ไม่มี guard เลยแม้แต่ตัวเดียว)"
+      "description": "Body ตาม CreateDeviceDto ส่งเป็น multipart/form-data (รองรับอัพโหลดรูปอุปกรณ์) — required: serial, ward, staticName, status (bool), seq (int), firmware. Optional: name, remark, position, location, tag, installDate, positionPic (ไฟล์รูป jpg/png/webp ≤5MB, ไม่แนบได้เพราะ optional). ใช้ {{newDeviceSerial}} เพื่อเลี่ยง 409 Conflict\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — JwtAuthGuard เฉยๆ ไม่มี RolesGuard (ต้องมี actor สำหรับบันทึก device audit)"
      }
     },
     {
@@ -184,15 +244,31 @@
       "method": "GET",
       "header": [],
       "url": {
-       "raw": "{{baseUrl}}/log/devices",
+       "raw": "{{baseUrl}}/log/devices?page=1&limit=20&ward=ICU",
        "host": [
         "{{baseUrl}}"
        ],
        "path": [
         "log",
         "devices"
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1"
+        },
+        {
+         "key": "limit",
+         "value": "20"
+        },
+        {
+         "key": "ward",
+         "value": "ICU",
+         "description": "optional, comma-separated หรือ repeated key — กรองหลาย ward พร้อมกันได้"
+        }
        ]
-      }
+      },
+      "description": "ไม่ guard (คงพฤติกรรมเดิม) — คืนแบบ paginate พร้อม include hardware ปัจจุบัน"
      }
     },
     {
@@ -219,15 +295,110 @@
          "value": "{{serial}}"
         }
        ]
-      }
+      },
+      "description": "หาด้วย serial ของกล่องที่ติดตั้งอยู่ปัจจุบัน — ไม่ guard"
+     }
+    },
+    {
+     "name": "Get device by static name",
+     "request": {
+      "auth": {
+       "type": "noauth"
+      },
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/by-name/:staticName",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        "by-name",
+        ":staticName"
+       ],
+       "variable": [
+        {
+         "key": "staticName",
+         "value": "{{staticName}}"
+        }
+       ]
+      },
+      "description": "หาด้วย identity ถาวรของจุดติดตั้ง — ใช้ได้แม้ยังไม่มีกล่องติดตั้งอยู่ ไม่ guard"
+     }
+    },
+    {
+     "name": "Swap hardware",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"serial\": \"{{newDeviceSerial}}\",\n  \"reason\": \"เครื่องเดิมพัง\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/by-name/:staticName/swap",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        "by-name",
+        ":staticName",
+        "swap"
+       ],
+       "variable": [
+        {
+         "key": "staticName",
+         "value": "{{staticName}}"
+        }
+       ]
+      },
+      "description": "สลับกล่องฮาร์ดแวร์ของจุดติดตั้งนี้ — serial ใหม่ที่ยังไม่เคยมีจะถูกสร้างให้อัตโนมัติ\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Assignment history",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/by-name/:staticName/assignments",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        "by-name",
+        ":staticName",
+        "assignments"
+       ],
+       "variable": [
+        {
+         "key": "staticName",
+         "value": "{{staticName}}"
+        }
+       ]
+      },
+      "description": "ประวัติการติดตั้งของจุดติดตั้ง — กล่องไหนอยู่ช่วงเวลาใด\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — ไม่จำกัด role (JwtAuthGuard เฉยๆ ไม่มี RolesGuard)"
      }
     },
     {
      "name": "Update device",
      "request": {
-      "auth": {
-       "type": "noauth"
-      },
       "method": "PUT",
       "header": [],
       "body": {
@@ -268,7 +439,979 @@
         }
        ]
       },
-      "description": ":id คือ serial ของ device (path param ชื่อ id แต่ query ด้วย serial ตามธรรมเนียมเดิมของ smtrack-log). Body ตาม UpdateDeviceDto ส่งเป็น multipart/form-data — ทุก field เป็น optional (partial ของ CreateDeviceDto) รวมถึง positionPic (ไฟล์รูปใหม่ — ถ้าแนบ server จะอัพโหลดรูปใหม่แล้วลบรูปเดิมทิ้งหลังอัพเดตสำเร็จ, ถ้าอัพเดตไม่สำเร็จรูปที่เพิ่งอัพโหลดจะถูกลบทิ้งอัตโนมัติ). ไม่ guard เหมือน endpoint อื่นใน DeviceController"
+      "description": ":id คือ serial ของ device. Body ตาม UpdateDeviceDto ส่งเป็น multipart/form-data — ทุก field optional รวมถึง positionPic (แนบไฟล์ใหม่ = อัพโหลดใหม่แล้วลบรูปเดิมทิ้งหลังสำเร็จ)\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — ไม่จำกัด role (JwtAuthGuard เฉยๆ ไม่มี RolesGuard)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Audit",
+   "item": [
+    {
+     "name": "Device audit trail",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/by-name/:staticName/audit?page=1&limit=20",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        "by-name",
+        ":staticName",
+        "audit"
+       ],
+       "variable": [
+        {
+         "key": "staticName",
+         "value": "{{staticName}}"
+        }
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1"
+        },
+        {
+         "key": "limit",
+         "value": "20"
+        }
+       ]
+      },
+      "description": "ประวัติการเพิ่ม/แก้ไข/สลับข้อมูลของจุดติดตั้ง เรียงจากใหม่ไปเก่า\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Probe",
+   "item": [
+    {
+     "name": "Create probe",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"name\": \"P1\",\n  \"type\": \"SHT-31\",\n  \"channel\": \"1\",\n  \"tempMin\": 2,\n  \"tempMax\": 8,\n  \"humiMin\": 30,\n  \"humiMax\": 70,\n  \"doorQty\": 1,\n  \"doorSound\": true,\n  \"notiDelay\": 0,\n  \"notiToNormal\": true,\n  \"notiMobile\": true,\n  \"notiRepeat\": 1,\n  \"firstDay\": \"ALL\",\n  \"firstTime\": \"0000\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/:deviceId/probes",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        ":deviceId",
+        "probes"
+       ],
+       "variable": [
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}"
+        }
+       ]
+      },
+      "description": "Body ตาม CreateProbeDto — ทุก field optional (ดู default ใน schema), deviceId มาจาก path param เท่านั้น\n\n`channel` คือ business key คู่กับ deviceId: เป็นค่าที่อุปกรณ์ใช้อ้างถึง probe ตัวนี้ใน payload (`probe` ใน log) และเป็นตัวที่ระบบใช้ resolve `probeId` ตอน ingest — unique ต่อ device ส่งค่าที่มีอยู่แล้วจะได้ 409\n\nไม่ส่ง `channel` มา ระบบจะเลือกช่องถัดไปที่ยังว่างของ device นั้นให้เอง\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Create probe (channel 2)",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"name\": \"P2\",\n  \"type\": \"SHT-31\",\n  \"channel\": \"2\",\n  \"tempMin\": -25,\n  \"tempMax\": -15,\n  \"humiMin\": 30,\n  \"humiMax\": 70,\n  \"doorQty\": 1,\n  \"doorSound\": true,\n  \"notiDelay\": 0,\n  \"notiToNormal\": true,\n  \"notiMobile\": true,\n  \"notiRepeat\": 1,\n  \"firstDay\": \"ALL\",\n  \"firstTime\": \"0000\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/:deviceId/probes",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        ":deviceId",
+        "probes"
+       ],
+       "variable": [
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}"
+        }
+       ]
+      },
+      "description": "probe ตัวที่ 2 ของ device เดียวกัน (ช่องแช่แข็ง -25..-15 °C คนละช่วงกับ channel 1)\n\nหลังสร้างตัวนี้ GET /graph/:serialOrName จะคืน 2 series แยกกัน — เป็นเหตุผลที่ response ของ graph เป็น array ของ series ไม่ใช่ array ของ log"
+     }
+    },
+    {
+     "name": "List probes by device",
+     "request": {
+      "auth": {
+       "type": "noauth"
+      },
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/:deviceId/probes?page=1&limit=20",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        ":deviceId",
+        "probes"
+       ],
+       "variable": [
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}"
+        }
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1"
+        },
+        {
+         "key": "limit",
+         "value": "20"
+        }
+       ]
+      },
+      "description": "ไม่ guard เพื่อคงพฤติกรรมเดิมเหมือน device.controller.ts"
+     }
+    },
+    {
+     "name": "Get probe",
+     "request": {
+      "auth": {
+       "type": "noauth"
+      },
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/probes/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "probes",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{probeId}}"
+        }
+       ]
+      },
+      "description": "ไม่ guard"
+     }
+    },
+    {
+     "name": "Update probe",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"tempMin\": 3,\n  \"tempMax\": 9\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/probes/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "probes",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{probeId}}"
+        }
+       ]
+      },
+      "description": "Body เป็น partial ของ CreateProbeDto\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Delete probe",
+     "request": {
+      "method": "DELETE",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/probes/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "probes",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{probeId}}"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Device Config",
+   "item": [
+    {
+     "name": "Create config",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"dhcp\": true,\n  \"ssid\": \"RDE3_2.4GHz\",\n  \"password\": \"changeme\",\n  \"email1\": \"alert@example.com\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/:deviceId/config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        ":deviceId",
+        "config"
+       ],
+       "variable": [
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}"
+        }
+       ]
+      },
+      "description": "Body ตาม CreateDeviceConfigDto — ทุก field optional, deviceId มาจาก path param เท่านั้น (relation 1:1 กับ Devices)\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Get config by device",
+     "request": {
+      "auth": {
+       "type": "noauth"
+      },
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/:deviceId/config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        ":deviceId",
+        "config"
+       ],
+       "variable": [
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}"
+        }
+       ]
+      },
+      "description": "ไม่ guard เพื่อคงพฤติกรรมเดิมเหมือน device.controller.ts"
+     }
+    },
+    {
+     "name": "Update config",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"ssid\": \"RDE3_updated\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/:deviceId/config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        ":deviceId",
+        "config"
+       ],
+       "variable": [
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}"
+        }
+       ]
+      },
+      "description": "Body เป็น partial ของ CreateDeviceConfigDto\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Delete config",
+     "request": {
+      "method": "DELETE",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/:deviceId/config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        ":deviceId",
+        "config"
+       ],
+       "variable": [
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Device Repair",
+   "item": [
+    {
+     "name": "Create repair record",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"serial\": \"{{serial}}\",\n  \"devName\": \"Fridge 1\",\n  \"info\": \"compressor noise\",\n  \"address\": \"โรงพยาบาล A\",\n  \"ward\": \"ICU\",\n  \"detail\": \"แจ้งซ่อมผ่าน Postman\",\n  \"phone\": \"0812345678\",\n  \"status\": \"pending\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/repairs",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "repairs"
+       ]
+      },
+      "description": "Body ตาม CreateRepairDto — required: serial. Optional: devName, info, info1, info2, address, ward, detail, phone, status, warrantyStatus, remark (seq เป็น autoincrement, DB จัดการเอง)\n\nข้อมูลแอดมินภายใน จึง guard ทุก route รวม GET ด้วย\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "List repairs",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/repairs?page=1&limit=20",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "repairs"
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1"
+        },
+        {
+         "key": "limit",
+         "value": "20"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Get repairs by serial",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/repairs/by-serial/:serial",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "repairs",
+        "by-serial",
+        ":serial"
+       ],
+       "variable": [
+        {
+         "key": "serial",
+         "value": "{{serial}}"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Get repair",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/repairs/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "repairs",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{repairId}}"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Update repair",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"status\": \"resolved\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/repairs/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "repairs",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{repairId}}"
+        }
+       ]
+      },
+      "description": "Body เป็น partial ของ CreateRepairDto — serial ที่ส่งมาจะถูกตัดทิ้ง (แก้ไม่ได้ย้อนหลัง)\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Warranties",
+   "item": [
+    {
+     "name": "Create warranty",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"serial\": \"{{serial}}\",\n  \"devName\": \"Fridge 1\",\n  \"product\": \"SMtrack Fridge Monitor\",\n  \"model\": \"SM-100\",\n  \"customerName\": \"โรงพยาบาล A\",\n  \"expire\": \"2027-01-01T00:00:00.000Z\"\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/warranties",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "warranties"
+       ]
+      },
+      "description": "Body ตาม CreateWarrantyDto — required: serial. Optional: devName, product, model, installDate, customerName, customerAddress, saleDepartment, invoice, expire (ISO date), status, note\n\nข้อมูลแอดมินภายใน จึง guard ทุก route รวม GET ด้วย\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "List warranties",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/warranties?page=1&limit=20",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "warranties"
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1"
+        },
+        {
+         "key": "limit",
+         "value": "20"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Get warranties by serial",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/warranties/by-serial/:serial",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "warranties",
+        "by-serial",
+        ":serial"
+       ],
+       "variable": [
+        {
+         "key": "serial",
+         "value": "{{serial}}"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Get warranty",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/warranties/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "warranties",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{warrantyId}}"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Update warranty",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"status\": false\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/warranties/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "warranties",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{warrantyId}}"
+        }
+       ]
+      },
+      "description": "Body เป็น partial ของ CreateWarrantyDto — serial ที่ส่งมาจะถูกตัดทิ้ง (แก้ไม่ได้ย้อนหลัง)\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Firmware",
+   "item": [
+    {
+     "name": "Upload firmware",
+     "request": {
+      "method": "POST",
+      "header": [],
+      "body": {
+       "mode": "formdata",
+       "formdata": [
+        {
+         "key": "version",
+         "value": "{{firmwareVersion}}",
+         "type": "text"
+        },
+        {
+         "key": "name",
+         "value": "Release {{firmwareVersion}}",
+         "type": "text"
+        },
+        {
+         "key": "description",
+         "value": "อัปเดตผ่าน Postman",
+         "type": "text"
+        },
+        {
+         "key": "file",
+         "type": "file",
+         "src": []
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/firmware",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "firmware"
+       ]
+      },
+      "description": "Body ตาม CreateFirmwareDto ส่งเป็น multipart/form-data — required: version (unique), name, file (ไฟล์ binary, จำกัดขนาดด้วย FIRMWARE_MAX_FILE_SIZE, default 100MB). Optional: description\n\nversion ซ้ำจะได้ 409 Conflict\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "List firmware",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/firmware?page=1&limit=20",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "firmware"
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1"
+        },
+        {
+         "key": "limit",
+         "value": "20"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Get latest firmware",
+     "request": {
+      "auth": {
+       "type": "noauth"
+      },
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/firmware/latest",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "firmware",
+        "latest"
+       ]
+      },
+      "description": "เวอร์ชั่นล่าสุดตามเวลาที่อัปโหลด — ให้อุปกรณ์ IoT เช็คเทียบกับ Hardware.firmware ปัจจุบันก่อนตัดสินใจดาวน์โหลด\n\nไม่ guard — เปิดสาธารณะ (endpoint สำหรับอุปกรณ์เรียกโดยตรง ยังไม่มี device-token flow สำหรับ use case นี้)"
+     }
+    },
+    {
+     "name": "Get firmware",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/firmware/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "firmware",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{firmwareId}}"
+        }
+       ]
+      },
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Download firmware file",
+     "request": {
+      "auth": {
+       "type": "noauth"
+      },
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/firmware/download/:version",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "firmware",
+        "download",
+        ":version"
+       ],
+       "variable": [
+        {
+         "key": "version",
+         "value": "{{firmwareVersion}}"
+        }
+       ]
+      },
+      "description": "อุปกรณ์ IoT ดาวน์โหลดไฟล์ firmware ตรงจากที่นี่ — response เป็น binary stream (application/octet-stream) ไม่ถูกห่อด้วย ResponseInterceptor (@SkipInterceptor), 404 ถ้าไม่มีเวอร์ชั่นนี้\n\nไม่ guard — เปิดสาธารณะ"
+     }
+    },
+    {
+     "name": "Update firmware metadata",
+     "request": {
+      "method": "PUT",
+      "header": [],
+      "body": {
+       "mode": "formdata",
+       "formdata": [
+        {
+         "key": "name",
+         "value": "renamed release",
+         "type": "text"
+        },
+        {
+         "key": "description",
+         "value": "updated via Postman",
+         "type": "text"
+        },
+        {
+         "key": "file",
+         "type": "file",
+         "src": [],
+         "disabled": true
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{baseUrl}}/log/firmware/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "firmware",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{firmwareId}}"
+        }
+       ]
+      },
+      "description": "Body เป็น partial ของ CreateFirmwareDto ส่งเป็น multipart/form-data — version ที่ส่งมาจะถูกตัดทิ้ง (แก้ไม่ได้ย้อนหลัง, ต้องการเวอร์ชั่นใหม่ต้องอัปโหลดรายการใหม่). แนบ file ใหม่ = แทนที่ไฟล์เดิมแล้วลบไฟล์เก่าทิ้งหลังสำเร็จ\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    },
+    {
+     "name": "Delete firmware",
+     "request": {
+      "method": "DELETE",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/firmware/:id",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "firmware",
+        ":id"
+       ],
+       "variable": [
+        {
+         "key": "id",
+         "value": "{{firmwareId}}"
+        }
+       ]
+      },
+      "description": "Hard delete — ลบทั้ง record ใน DB และไฟล์ใน S3\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "User Audit",
+   "item": [
+    {
+     "name": "Find audit by actor",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/users/:actorId/audit?page=1&limit=20",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "users",
+        ":actorId",
+        "audit"
+       ],
+       "variable": [
+        {
+         "key": "actorId",
+         "value": "{{actorId}}"
+        }
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1"
+        },
+        {
+         "key": "limit",
+         "value": "20"
+        }
+       ]
+      },
+      "description": "ประวัติ action ของ user คนหนึ่งข้าม entity (device/probe/config/repair/warranty/firmware) เรียงจากใหม่ไปเก่า\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็นหนึ่งใน SUPER/SERVICE/ADMIN เท่านั้น (RolesGuard)"
      }
     }
    ]
@@ -285,7 +1428,7 @@
       "method": "GET",
       "header": [],
       "url": {
-       "raw": "{{baseUrl}}/log/telemetry?serial={{serial}}&from=2026-07-01T00:00:00.000Z&to=2026-07-22T23:59:59.000Z&limit=100",
+       "raw": "{{baseUrl}}/log/telemetry?serial={{serial}}&deviceId={{deviceId}}&probeId={{probeId}}&from=2026-07-01T00:00:00.000Z&to=2026-07-22T23:59:59.000Z&limit=100",
        "host": [
         "{{baseUrl}}"
        ],
@@ -296,7 +1439,24 @@
        "query": [
         {
          "key": "serial",
-         "value": "{{serial}}"
+         "value": "{{serial}}",
+         "description": "optional — กรองด้วยกล่องฮาร์ดแวร์"
+        },
+        {
+         "key": "deviceId",
+         "value": "{{deviceId}}",
+         "description": "optional — กรองด้วยจุดติดตั้ง (ประวัติต่อเนื่องข้ามการสลับเครื่อง)"
+        },
+        {
+         "key": "probeId",
+         "value": "{{probeId}}",
+         "description": "optional — กรองเฉพาะ log ของ probe ตัวนั้น (Probes.id)"
+        },
+        {
+         "key": "probe",
+         "value": "1",
+         "disabled": true,
+         "description": "optional — กรองด้วย channel ดิบที่อุปกรณ์ส่งมา ควรใช้คู่กับ serial/deviceId เพราะ channel ซ้ำได้ข้าม device"
         },
         {
          "key": "from",
@@ -308,11 +1468,12 @@
         },
         {
          "key": "limit",
-         "value": "100"
+         "value": "100",
+         "description": "1-1000, default 100"
         }
        ]
       },
-      "description": "Query ตาม QueryTelemetryDto — ทุก field เป็น optional: serial, from (ISO date), to (ISO date), limit (int 1-1000, default 100). ไม่ guard ในรอบนี้"
+      "description": "Query ตาม QueryTelemetryDto — ทุก field optional: serial, deviceId, probeId (uuid), probe (channel), from (ISO date), to (ISO date), page, limit (1-1000, default 100). ไม่ guard ในรอบนี้"
      }
     }
    ]
@@ -329,23 +1490,23 @@
       "method": "GET",
       "header": [],
       "url": {
-       "raw": "{{baseUrl}}/log/logday/:serial",
+       "raw": "{{baseUrl}}/log/logday/:serialOrName",
        "host": [
         "{{baseUrl}}"
        ],
        "path": [
         "log",
         "logday",
-        ":serial"
+        ":serialOrName"
        ],
        "variable": [
         {
-         "key": "serial",
+         "key": "serialOrName",
          "value": "{{serial}}"
         }
        ]
       },
-      "description": "สรุป rollup รายวัน (TimescaleDB time_bucket) ไม่ guard — คนละ endpoint กับ GET /logday/:id (ดึง log entry เดี่ยวด้วย id ยังไม่มี endpoint แยกในรอบนี้)"
+      "description": "สรุป rollup รายวัน (TimescaleDB time_bucket) — รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ หรือ staticName ของจุดติดตั้ง ไม่ guard\n\n⚠️ สรุปถูกแบ่ง bucket **ต่อ probe** ไม่ใช่ต่อ device — แต่ละแถวมี `probeId`, `channel`, `name` กำกับว่าเป็นของ probe ไหน (ก่อนหน้านี้ avg/min/max ถูกเฉลี่ยข้ามทุก probe ของ device ซึ่งไม่มีความหมายทางกายภาพ)"
      }
     },
     {
@@ -370,7 +1531,7 @@
       ],
       "body": {
        "mode": "raw",
-       "raw": "{\n  \"temp\": 4.5,\n  \"tempDisplay\": 4.5,\n  \"humidity\": 55,\n  \"humidityDisplay\": 55,\n  \"plug\": true,\n  \"door1\": false,\n  \"door2\": false,\n  \"door3\": false,\n  \"internet\": true,\n  \"probe\": \"1\",\n  \"battery\": 100,\n  \"tempInternal\": 4.2,\n  \"extMemory\": true\n}",
+       "raw": "{\n  \"temp\": 4.5,\n  \"tempDisplay\": 4.5,\n  \"humidity\": 55,\n  \"humidityDisplay\": 55,\n  \"plug\": true,\n  \"door1\": false,\n  \"door2\": false,\n  \"door3\": false,\n  \"internet\": true,\n  \"probe\": \"2\",\n  \"battery\": 100,\n  \"tempInternal\": 4.2,\n  \"extMemory\": true\n}",
        "options": {
         "raw": {
          "language": "json"
@@ -387,7 +1548,7 @@
         "logday"
        ]
       },
-      "description": "REST fallback สำหรับ ingest log — ทางหลักคือ MQTT (devices/{serial}/log), endpoint นี้เรียก TelemetryService.ingest() ตัวเดียวกัน ไม่ใช่ insert logic แยก\n\nต้องใช้ Device JWT ({{deviceJwtToken}}, payload {sn: serial}) — serial ในผลลัพธ์จะถูก overwrite จาก token เสมอ ไม่สนใจ serial ที่ส่งมาใน body (ถ้ามี)\n\nBody รับได้ทั้ง object เดี่ยว (ตามตัวอย่าง) หรือ array ของ object เดียวกัน (ingest หลายรายการพร้อมกัน) — ทุก field เป็น optional ตาม CreateTelemetryDto"
+      "description": "REST fallback สำหรับ ingest log — ทางหลักคือ MQTT (devices/{serial}/log), endpoint นี้เรียก TelemetryService.ingest() ตัวเดียวกัน ไม่ใช่ insert logic แยก\n\nต้องใช้ Device JWT ({{deviceJwtToken}}, payload {sn: serial}) — serial จะถูก overwrite จาก token เสมอ\n\nBody รับได้ทั้ง object เดี่ยว (ตามตัวอย่าง) หรือ array ของ object เดียวกัน — ทุก field optional ตาม CreateTelemetryDto\n\n`probe` คือ channel ของ probe ที่ค่านี้มาจาก (default `\"1\"` ถ้าไม่ส่ง) — ระบบ resolve เป็น `probeId` ให้อัตโนมัติ และถ้า channel นั้นยังไม่มี Probes row จะ **สร้างให้เอง** ด้วยค่า threshold default (เสียบ probe เพิ่มหน้างานแล้วส่งข้อมูลได้ทันที ไม่ต้องรอ admin มาตั้งค่า)"
      }
     },
     {
@@ -402,7 +1563,7 @@
       ],
       "body": {
        "mode": "raw",
-       "raw": "{\n  \"temp\": 5.0,\n  \"remark\": \"corrected reading\"\n}",
+       "raw": "{\n  \"temp\": 5.0\n}",
        "options": {
         "raw": {
          "language": "json"
@@ -451,7 +1612,7 @@
         }
        ]
       },
-      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็น SUPER หรือ SERVICE เท่านั้น (RolesGuard) — role อื่นจะได้ 403"
+      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) พร้อม role เป็น SUPER หรือ SERVICE เท่านั้น (RolesGuard)"
      }
     }
    ]
@@ -460,28 +1621,195 @@
    "name": "Graph",
    "item": [
     {
-     "name": "Get graph data",
+     "name": "Get graph data (1 day)",
      "request": {
       "method": "GET",
       "header": [],
       "url": {
-       "raw": "{{baseUrl}}/log/graph/:serial",
+       "raw": "{{baseUrl}}/log/graph/:serialOrName?range=1d",
        "host": [
         "{{baseUrl}}"
        ],
        "path": [
         "log",
         "graph",
-        ":serial"
+        ":serialOrName"
+       ],
+       "query": [
+        {
+         "key": "range",
+         "value": "1d"
+        },
+        {
+         "key": "probeId",
+         "value": "{{probeId}}",
+         "disabled": true,
+         "description": "optional — ขอเส้นเดียวของ probe นั้น; ไม่ระบุ = ทุก probe"
+        }
        ],
        "variable": [
         {
-         "key": "serial",
+         "key": "serialOrName",
          "value": "{{serial}}"
         }
        ]
       },
-      "description": "ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — GraphController guard ทั้ง controller ด้วย JwtAuthGuard (ไม่จำกัด role)"
+      "description": "รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง — resolve เป็น deviceId ก่อน query จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง\n\n⚠️ response เป็น **array ของ series ต่อ probe** ไม่ใช่ array ของ log แบน ๆ (1 device มีได้หลาย probe):\n```json\n[\n  { \"probeId\": \"…\", \"channel\": \"1\", \"name\": \"P1\",\n    \"tempMin\": 2, \"tempMax\": 8, \"humiMin\": 30, \"humiMax\": 70,\n    \"points\": [ { \"sendTime\": \"…\", \"temp\": 4.5, \"humidity\": 55, … } ] },\n  { \"probeId\": \"…\", \"channel\": \"2\", \"name\": \"P2\", \"points\": [ … ] }\n]\n```\n\n- `points` คือค่าดิบทุกแถวในช่วงเวลานั้น เรียงตาม sendTime — ไม่มีการ average/downsample\n- probe ที่ไม่มีข้อมูลในช่วงนั้นยังถูกคืนมาด้วย `points: []` (สัญญาณว่า probe หลุด/เสีย ไม่ใช่ไม่มี probe)\n- log ที่ยังไม่ถูกผูก probe (ข้อมูลก่อน migration หรือกล่องที่ยังไม่ถูกติดตั้ง) รวมอยู่ใน series พิเศษ `{ \"probeId\": null, \"channel\": \"unassigned\" }` ไม่ถูกทิ้งเงียบ ๆ\n\n`range` รับได้ 4 แบบ: `1d`, `7d`, `30d`, `custom` (ต้องส่ง `from`/`to` เพิ่มเมื่อเป็น custom) — ไม่ระบุ `range` จะ default เป็น `1d`\n\n`probeId` (optional, uuid) — ระบุเพื่อขอเส้นเดียว, ไม่ระบุ = ทุก probe ของ device นั้น\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — ไม่จำกัด role (JwtAuthGuard เฉยๆ ไม่มี RolesGuard)"
+     }
+    },
+    {
+     "name": "Get graph data (7 days)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/graph/:serialOrName?range=7d",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "graph",
+        ":serialOrName"
+       ],
+       "query": [
+        {
+         "key": "range",
+         "value": "7d"
+        },
+        {
+         "key": "probeId",
+         "value": "{{probeId}}",
+         "disabled": true,
+         "description": "optional — ขอเส้นเดียวของ probe นั้น; ไม่ระบุ = ทุก probe"
+        }
+       ],
+       "variable": [
+        {
+         "key": "serialOrName",
+         "value": "{{serial}}"
+        }
+       ]
+      },
+      "description": "รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง — resolve เป็น deviceId ก่อน query จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง\n\n⚠️ response เป็น **array ของ series ต่อ probe** ไม่ใช่ array ของ log แบน ๆ (1 device มีได้หลาย probe):\n```json\n[\n  { \"probeId\": \"…\", \"channel\": \"1\", \"name\": \"P1\",\n    \"tempMin\": 2, \"tempMax\": 8, \"humiMin\": 30, \"humiMax\": 70,\n    \"points\": [ { \"sendTime\": \"…\", \"temp\": 4.5, \"humidity\": 55, … } ] },\n  { \"probeId\": \"…\", \"channel\": \"2\", \"name\": \"P2\", \"points\": [ … ] }\n]\n```\n\n- `points` คือค่าดิบทุกแถวในช่วงเวลานั้น เรียงตาม sendTime — ไม่มีการ average/downsample\n- probe ที่ไม่มีข้อมูลในช่วงนั้นยังถูกคืนมาด้วย `points: []` (สัญญาณว่า probe หลุด/เสีย ไม่ใช่ไม่มี probe)\n- log ที่ยังไม่ถูกผูก probe (ข้อมูลก่อน migration หรือกล่องที่ยังไม่ถูกติดตั้ง) รวมอยู่ใน series พิเศษ `{ \"probeId\": null, \"channel\": \"unassigned\" }` ไม่ถูกทิ้งเงียบ ๆ\n\n`range` รับได้ 4 แบบ: `1d`, `7d`, `30d`, `custom` (ต้องส่ง `from`/`to` เพิ่มเมื่อเป็น custom) — ไม่ระบุ `range` จะ default เป็น `1d`\n\n`probeId` (optional, uuid) — ระบุเพื่อขอเส้นเดียว, ไม่ระบุ = ทุก probe ของ device นั้น\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — ไม่จำกัด role (JwtAuthGuard เฉยๆ ไม่มี RolesGuard)"
+     }
+    },
+    {
+     "name": "Get graph data (30 days)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/graph/:serialOrName?range=30d",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "graph",
+        ":serialOrName"
+       ],
+       "query": [
+        {
+         "key": "range",
+         "value": "30d"
+        },
+        {
+         "key": "probeId",
+         "value": "{{probeId}}",
+         "disabled": true,
+         "description": "optional — ขอเส้นเดียวของ probe นั้น; ไม่ระบุ = ทุก probe"
+        }
+       ],
+       "variable": [
+        {
+         "key": "serialOrName",
+         "value": "{{serial}}"
+        }
+       ]
+      },
+      "description": "รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง — resolve เป็น deviceId ก่อน query จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง\n\n⚠️ response เป็น **array ของ series ต่อ probe** ไม่ใช่ array ของ log แบน ๆ (1 device มีได้หลาย probe):\n```json\n[\n  { \"probeId\": \"…\", \"channel\": \"1\", \"name\": \"P1\",\n    \"tempMin\": 2, \"tempMax\": 8, \"humiMin\": 30, \"humiMax\": 70,\n    \"points\": [ { \"sendTime\": \"…\", \"temp\": 4.5, \"humidity\": 55, … } ] },\n  { \"probeId\": \"…\", \"channel\": \"2\", \"name\": \"P2\", \"points\": [ … ] }\n]\n```\n\n- `points` คือค่าดิบทุกแถวในช่วงเวลานั้น เรียงตาม sendTime — ไม่มีการ average/downsample\n- probe ที่ไม่มีข้อมูลในช่วงนั้นยังถูกคืนมาด้วย `points: []` (สัญญาณว่า probe หลุด/เสีย ไม่ใช่ไม่มี probe)\n- log ที่ยังไม่ถูกผูก probe (ข้อมูลก่อน migration หรือกล่องที่ยังไม่ถูกติดตั้ง) รวมอยู่ใน series พิเศษ `{ \"probeId\": null, \"channel\": \"unassigned\" }` ไม่ถูกทิ้งเงียบ ๆ\n\n`range` รับได้ 4 แบบ: `1d`, `7d`, `30d`, `custom` (ต้องส่ง `from`/`to` เพิ่มเมื่อเป็น custom) — ไม่ระบุ `range` จะ default เป็น `1d`\n\n`probeId` (optional, uuid) — ระบุเพื่อขอเส้นเดียว, ไม่ระบุ = ทุก probe ของ device นั้น\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — ไม่จำกัด role (JwtAuthGuard เฉยๆ ไม่มี RolesGuard)"
+     }
+    },
+    {
+     "name": "Get graph data (custom range)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/graph/:serialOrName?range=custom&from=2026-07-01T00:00:00.000Z&to=2026-07-30T00:00:00.000Z",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "graph",
+        ":serialOrName"
+       ],
+       "query": [
+        {
+         "key": "range",
+         "value": "custom"
+        },
+        {
+         "key": "from",
+         "value": "2026-07-01T00:00:00.000Z"
+        },
+        {
+         "key": "to",
+         "value": "2026-07-30T00:00:00.000Z"
+        },
+        {
+         "key": "probeId",
+         "value": "{{probeId}}",
+         "disabled": true,
+         "description": "optional — ขอเส้นเดียวของ probe นั้น; ไม่ระบุ = ทุก probe"
+        }
+       ],
+       "variable": [
+        {
+         "key": "serialOrName",
+         "value": "{{serial}}"
+        }
+       ]
+      },
+      "description": "รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง — resolve เป็น deviceId ก่อน query จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง\n\n⚠️ response เป็น **array ของ series ต่อ probe** ไม่ใช่ array ของ log แบน ๆ (1 device มีได้หลาย probe):\n```json\n[\n  { \"probeId\": \"…\", \"channel\": \"1\", \"name\": \"P1\",\n    \"tempMin\": 2, \"tempMax\": 8, \"humiMin\": 30, \"humiMax\": 70,\n    \"points\": [ { \"sendTime\": \"…\", \"temp\": 4.5, \"humidity\": 55, … } ] },\n  { \"probeId\": \"…\", \"channel\": \"2\", \"name\": \"P2\", \"points\": [ … ] }\n]\n```\n\n- `points` คือค่าดิบทุกแถวในช่วงเวลานั้น เรียงตาม sendTime — ไม่มีการ average/downsample\n- probe ที่ไม่มีข้อมูลในช่วงนั้นยังถูกคืนมาด้วย `points: []` (สัญญาณว่า probe หลุด/เสีย ไม่ใช่ไม่มี probe)\n- log ที่ยังไม่ถูกผูก probe (ข้อมูลก่อน migration หรือกล่องที่ยังไม่ถูกติดตั้ง) รวมอยู่ใน series พิเศษ `{ \"probeId\": null, \"channel\": \"unassigned\" }` ไม่ถูกทิ้งเงียบ ๆ\n\n`range` รับได้ 4 แบบ: `1d`, `7d`, `30d`, `custom` (ต้องส่ง `from`/`to` เพิ่มเมื่อเป็น custom) — ไม่ระบุ `range` จะ default เป็น `1d`\n\n`probeId` (optional, uuid) — ระบุเพื่อขอเส้นเดียว, ไม่ระบุ = ทุก probe ของ device นั้น\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection) — ไม่จำกัด role (JwtAuthGuard เฉยๆ ไม่มี RolesGuard)"
+     }
+    },
+    {
+     "name": "Get graph data (single probe)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/graph/:serialOrName?range=7d&probeId={{probeId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "graph",
+        ":serialOrName"
+       ],
+       "query": [
+        {
+         "key": "range",
+         "value": "7d"
+        },
+        {
+         "key": "probeId",
+         "value": "{{probeId}}",
+         "description": "optional — ขอเส้นเดียวของ probe นั้น; ไม่ระบุ = ทุก probe"
+        }
+       ],
+       "variable": [
+        {
+         "key": "serialOrName",
+         "value": "{{serial}}"
+        }
+       ]
+      },
+      "description": "ขอเส้นเดียวของ probe ที่ระบุ — คืน array ที่มี series เดียว\n\nต่างจากการไม่ระบุ `probeId` คือ series ของ probe อื่นจะไม่ถูกคืนมาเลย (ไม่ใช่คืนมาแบบ `points` ว่าง) และไม่มี series `unassigned`\n\nรับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง — resolve เป็น deviceId ก่อน query จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง\n\n⚠️ response เป็น **array ของ series ต่อ probe** ไม่ใช่ array ของ log แบน ๆ (1 device มีได้หลาย probe):\n```json\n[\n  { \"probeId\": \"…\", \"channel\": \"1\", \"name\": \"P1\",\n    \"tempMin\": 2, \"tempMax\": 8, \"humiMin\": 30, \"humiMax\": 70,\n    \"points\": [ { \"sendTime\": \"…\", \"temp\": 4.5, \"humidity\": 55, … } ] },\n  { \"probeId\": \"…\", \"channel\": \"2\", \"name\": \"P2\", \"points\": [ … ] }\n]\n```\n\n- `points` คือค่าดิบทุกแถวในช่วงเวลานั้น เรียงตาม sendTime — ไม่มีการ average/downsample\n- probe ที่ไม่มีข้อมูลในช่วงนั้นยังถูกคืนมาด้วย `points: []` (สัญญาณว่า probe หลุด/เสีย ไม่ใช่ไม่มี probe)\n- log ที่ยังไม่ถูกผูก probe (ข้อมูลก่อน migration หรือกล่องที่ยังไม่ถูกติดตั้ง) รวมอยู่ใน series พิเศษ `{ \"probeId\": null, \"channel\": \"unassigned\" }` ไม่ถูกทิ้งเงียบ ๆ\n\nต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection)"
      }
     }
    ]
@@ -511,7 +1839,7 @@
       ],
       "body": {
        "mode": "raw",
-       "raw": "{\n  \"serial\": \"{{serial}}\",\n  \"message\": \"DOOR/DOOR1/ON/5\",\n  \"detail\": \"Door open too long\"\n}",
+       "raw": "{\n  \"serial\": \"{{serial}}\",\n  \"message\": \"PROBE/TEMP/OVER/8.5\",\n  \"detail\": \"Temperature above threshold\",\n  \"probe\": \"1\"\n}",
        "options": {
         "raw": {
          "language": "json"
@@ -528,7 +1856,7 @@
         "notifications"
        ]
       },
-      "description": "Body ตาม CreateNotificationDto — required: serial, message. Optional: detail\n\nต้องใช้ Device JWT ({{deviceJwtToken}}, payload {sn: serial}) — serial ใน body จะถูก overwrite จาก token เสมอ"
+      "description": "Body ตาม CreateNotificationDto — required: serial, message. Optional: detail, probe\n\n`probe` = channel ของ probe ต้นเหตุ (เลขช่องเดียวกับที่ส่งใน log) — ระบบ resolve เป็น `probeId` เก็บไว้ และส่งต่อไปใน payload ของ MQTT/SSE/FCM ด้วย\n\nไม่ส่ง `probe` มา = การแจ้งเตือนระดับกล่อง (ไฟดับ/เน็ตหลุด/SD card) ที่ไม่ผูกกับ probe ตัวใดตัวหนึ่ง\n\nFCM topic ยังเป็นระดับกล่อง (`device_{serial}`) ไม่แตกต่อ probe — probe ไปเป็น `data` field ให้ mobile กรองเอง\n\nต้องใช้ Device JWT ({{deviceJwtToken}}, payload {sn: serial}) — serial ใน body จะถูก overwrite จาก token เสมอ"
      }
     },
     {
@@ -537,7 +1865,7 @@
       "method": "GET",
       "header": [],
       "url": {
-       "raw": "{{baseUrl}}/log/notifications?filter=door&page=1&perpage=10",
+       "raw": "{{baseUrl}}/log/notifications?filter=door&page=1&limit=10",
        "host": [
         "{{baseUrl}}"
        ],
@@ -556,12 +1884,12 @@
          "value": "1"
         },
         {
-         "key": "perpage",
+         "key": "limit",
          "value": "10"
         }
        ]
       },
-      "description": "Paginated/filtered list — ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection)\n\nScope ตาม role ใน payload: USER/LEGACY_USER เห็นเฉพาะ notification ของ device ใน ward เดียวกัน (payload.wardId), role อื่นเห็นทั้งหมด (หมายเหตุ: v2 ตัด field hospital ออกจาก schema แล้ว ต่างจาก legacy ที่เคย scope ตาม hospital ด้วยสำหรับ ADMIN/SERVICE/LEGACY_ADMIN)"
+      "description": "Paginated/filtered list ตาม NotificationQueryDto (filter, page, limit) — ต้องใช้ User JWT ({{jwtToken}}, inherit จาก collection)\n\nScope ตาม role ใน payload: USER/LEGACY_USER เห็นเฉพาะ notification ของ device ใน ward เดียวกัน (payload.wardId), role อื่นเห็นทั้งหมด"
      }
     },
     {
@@ -773,7 +2101,7 @@
         }
        ]
       },
-      "description": "month format: YYYY-MM. หมายเหตุ: controller มี comment ว่าควรผูก JwtAuthGuard/AdminGuard แต่ยังไม่ implement จริง — backup module อยู่นอกขอบเขตของรอบ auth-porting นี้ (design ต่างจาก legacy โดยพื้นฐาน ใช้ TimescaleDB/S3 แทน InfluxDB)"
+      "description": "month format: YYYY-MM. หมายเหตุ: controller มี comment ว่าควรผูก JwtAuthGuard/AdminGuard แต่ยังไม่ implement จริง — backup module อยู่นอกขอบเขตของรอบ auth-porting นี้"
      }
     },
     {
@@ -802,7 +2130,7 @@
         }
        ]
       },
-      "description": "month format: YYYY-MM. หมายเหตุ: ถ้า month ยังอยู่ใน retention window (เช่นเดือนปัจจุบันหรือใกล้เคียง) จะได้ 400 Bad Request เพราะ query ข้อมูลจากตาราง LogDays ได้โดยตรงอยู่แล้ว ไม่ต้อง restore — ให้ทดสอบด้วย month เก่ากว่า retention window แทน"
+      "description": "month format: YYYY-MM. หมายเหตุ: ถ้า month ยังอยู่ใน retention window จะได้ 400 Bad Request — ให้ทดสอบด้วย month เก่ากว่า retention window แทน"
      }
     },
     {
@@ -831,7 +2159,7 @@
         }
        ]
       },
-      "description": "month format: YYYY-MM. จะได้ 404 ถ้า month นั้นยังไม่ได้ถูก restore ไว้ก่อน (ต้องเรียก POST /backup/restores/:month ให้สำเร็จก่อน)"
+      "description": "month format: YYYY-MM. จะได้ 404 ถ้า month นั้นยังไม่ได้ถูก restore ไว้ก่อน"
      }
     }
    ]
@@ -842,9 +2170,6 @@
     {
      "name": "Telemetry stream (SSE)",
      "request": {
-      "auth": {
-       "type": "noauth"
-      },
       "method": "GET",
       "header": [
        {
@@ -863,15 +2188,12 @@
         "stream"
        ]
       },
-      "description": "Server-Sent Events stream ของ telemetry ใหม่ (heartbeat comment ทุก 30 วินาที). Postman จะไม่ render เป็น live stream เหมือน EventSource — ใช้เพื่อทดสอบว่า connection เปิดได้และ response header เป็น text/event-stream. ไม่ guard ในรอบนี้"
+      "description": "Server-Sent Events stream ของ telemetry ใหม่ (heartbeat event ทุก 30 วินาที). Postman จะไม่ render เป็น live stream เหมือน EventSource\n\nSseAuthGuard รับ token ได้ทั้ง `Authorization: Bearer` และ `?token=` (เผื่อ client ที่ตั้ง header ไม่ได้)"
      }
     },
     {
      "name": "Notifications stream (SSE)",
      "request": {
-      "auth": {
-       "type": "noauth"
-      },
       "method": "GET",
       "header": [
        {
@@ -890,7 +2212,61 @@
         "stream"
        ]
       },
-      "description": "Server-Sent Events stream ของ notification ใหม่. Postman จะไม่ render เป็น live stream เหมือน EventSource. ไม่ guard ในรอบนี้"
+      "description": "Server-Sent Events stream ของ notification ใหม่\n\nSseAuthGuard รับ token ได้ทั้ง `Authorization: Bearer` และ `?token=`"
+     }
+    },
+    {
+     "name": "Devices stream (SSE)",
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Accept",
+        "value": "text/event-stream"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/log/devices/stream",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "devices",
+        "stream"
+       ]
+      },
+      "description": "Server-Sent Events stream ของการเปลี่ยนแปลงจุดติดตั้ง (online/offline, แก้ข้อมูล, สลับกล่อง)\n\nSseAuthGuard รับ token ได้ทั้ง `Authorization: Bearer` และ `?token=`"
+     }
+    },
+    {
+     "name": "Multi-channel stream (SSE)",
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Accept",
+        "value": "text/event-stream"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/log/stream?channels=device,telemetry",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "stream"
+       ],
+       "query": [
+        {
+         "key": "channels",
+         "value": "device,telemetry",
+         "description": "optional, comma-separated: device | telemetry | notification — ไม่ระบุ = ทุก channel"
+        }
+       ]
+      },
+      "description": "stream รวมทุก channel บน connection เดียว สำหรับหน้า dashboard ที่ต้องการ telemetry, notification และสถานะ device พร้อมกัน — ชื่อ channel ที่ไม่รู้จักจะได้ 400\n\nSseAuthGuard รับ token ได้ทั้ง `Authorization: Bearer` และ `?token=`"
      }
     }
    ]

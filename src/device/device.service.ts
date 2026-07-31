@@ -2,13 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Devices } from '../generated/prisma/client';
+import { Devices, Configs, Probes } from '../generated/prisma/client';
 import { AppEvents } from '../common/events/app-events';
 import {
   DeviceChangeAction,
   DeviceChangeActor,
   buildDeviceChangedEvent,
 } from '../common/events/device-changed.event';
+import { ConfigChangeAction, buildConfigChangedEvent } from '../common/events/config-changed.event';
+import { ProbeChangeAction, buildProbeChangedEvent } from '../common/events/probe-changed.event';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { DeviceAssignmentService } from './device-assignment.service';
@@ -60,6 +62,30 @@ export class DeviceService {
     }
   }
 
+  private emitConfigChanged(
+    action: ConfigChangeAction,
+    config: Configs,
+    actor?: DeviceChangeActor,
+  ): void {
+    try {
+      this.events.emit(AppEvents.CONFIG_CHANGED, buildConfigChangedEvent(action, config, actor));
+    } catch (err) {
+      this.logger.warn(`emit config.changed (${action}) ล้มเหลว: ${(err as Error).message}`);
+    }
+  }
+
+  private emitProbeChanged(
+    action: ProbeChangeAction,
+    probe: Probes,
+    actor?: DeviceChangeActor,
+  ): void {
+    try {
+      this.events.emit(AppEvents.PROBE_CHANGED, buildProbeChangedEvent(action, probe, actor));
+    } catch (err) {
+      this.logger.warn(`emit probe.changed (${action}) ล้มเหลว: ${(err as Error).message}`);
+    }
+  }
+
   /**
    * สร้างจุดติดตั้งใหม่ — ถ้าระบุ serial มาด้วยจะสร้าง/ผูกกล่องและเปิด assignment ให้ในตัว
    *
@@ -75,12 +101,16 @@ export class DeviceService {
     const positionPic = file ? await this.uploadImage(serial, file) : undefined;
 
     try {
-      const device = await this.prisma.$transaction(async (tx) => {
+      const { device, config, probe } = await this.prisma.$transaction(async (tx) => {
         const created = await tx.devices.create({
           data: { ...deviceFields, positionPic },
           include: WITH_HARDWARE,
         });
-        if (!serial) return created;
+
+        const config = await tx.configs.create({ data: { deviceId: created.id } });
+        const probe = await tx.probes.create({ data: { deviceId: created.id } });
+
+        if (!serial) return { device: created, config, probe };
 
         await tx.hardware.upsert({
           where: { serial },
@@ -90,16 +120,19 @@ export class DeviceService {
         await tx.deviceAssignments.create({
           data: { deviceId: created.id, serial, reason: 'created' },
         });
-        return tx.devices.update({
+        const device = await tx.devices.update({
           where: { id: created.id },
           data: { serial },
           include: WITH_HARDWARE,
         });
+        return { device, config, probe };
       });
 
       await this.assignments.invalidate(serial);
       await this.redis.delByPattern(`${ALL_KEY_PREFIX}:*`);
       this.emitChanged('created', device, actor);
+      this.emitConfigChanged('created', config, actor);
+      this.emitProbeChanged('created', probe, actor);
       return device;
     } catch (err) {
       if (positionPic) await this.imageStorage.delete(positionPic);

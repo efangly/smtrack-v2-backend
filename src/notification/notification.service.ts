@@ -11,6 +11,7 @@ import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
+import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { NotificationQueryDto } from './dto/query-notification.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
@@ -38,6 +39,7 @@ export class NotificationService {
     private readonly traceService: TraceService,
     private readonly metrics: MetricsService,
     private readonly assignments: DeviceAssignmentService,
+    private readonly probes: ProbeResolverService,
   ) {}
 
   /**
@@ -50,10 +52,18 @@ export class NotificationService {
     // (null ได้ ถ้ากล่องยังไม่ถูกติดตั้งที่ไหน)
     const deviceId = await this.assignments.resolveDeviceId(dto.serial);
 
+    // ผูก probe ต้นเหตุถ้าอุปกรณ์บอกมา — ไม่บอกถือว่าเป็นการแจ้งเตือนระดับกล่อง (ไฟดับ/เน็ตหลุด)
+    // ใช้ resolver ตัวเดียวกับ ingest จึง auto-provision probe ที่ยังไม่มีให้เหมือนกัน
+    const channel = dto.probe?.trim() || null;
+    const probeId =
+      deviceId && channel ? await this.probes.resolveProbeId(deviceId, channel) : null;
+
     const notification = await this.prisma.notifications.create({
       data: {
         serial: dto.serial,
         deviceId,
+        probeId,
+        probe: channel,
         message: dto.message,
         detail: dto.detail ?? '',
       },
@@ -120,7 +130,14 @@ export class NotificationService {
           const result = await this.fcmService.pushToSerial(
             notification.serial,
             { title: notification.message, body: notification.detail },
-            { serial: notification.serial, notificationId: notification.id },
+            {
+              serial: notification.serial,
+              notificationId: notification.id,
+              // topic ยังเป็นระดับกล่อง (device_{serial}) ตามเดิม — probe ไปเป็น data
+              // ให้ mobile กรอง/ชี้จุดเองว่าเป็น probe ไหน ไม่แตก topic ต่อ probe
+              ...(notification.probe ? { probe: notification.probe } : {}),
+              ...(notification.probeId ? { probeId: notification.probeId } : {}),
+            },
           );
           this.metrics.recordNotificationDelivery('fcm', result.sent ? 'success' : 'error');
           return result.sent;

@@ -28,7 +28,7 @@ export interface ArchiveMeta {
    * ลำดับคอลัมน์ที่อยู่ในไฟล์ CSV
    *
    * COPY ... FROM STDIN อ่านไฟล์ตามลำดับคอลัมน์ที่ระบุใน statement ไม่ได้อ่านจากบรรทัด header
-   * ถ้าไม่บันทึกไว้ พอ schema เพิ่มคอลัมน์ (เช่นตอนเพิ่ม device_id) ไฟล์เก่าจะ restore ไม่ได้อีกเลย
+   * ถ้าไม่บันทึกไว้ พอ schema เพิ่มคอลัมน์ (device_id แล้วต่อมา probe_id) ไฟล์เก่าจะ restore ไม่ได้อีกเลย
    * ฟิลด์นี้ไม่มีในไฟล์ meta ที่ export ก่อนหน้านี้ ฝั่ง restore จึงต้อง fallback เป็นชุด legacy
    */
   columns?: readonly string[];
@@ -54,6 +54,9 @@ export const LOG_DAYS_COLUMNS = [
   'create_at',
   'update_at',
   'device_id',
+  // ⚠️ คอลัมน์ใหม่ต้อง "ต่อท้าย" เท่านั้น ห้ามแทรกกลาง — ไฟล์เก่าที่ไม่มี meta.columns
+  // ถูก restore ด้วยลำดับ legacy ที่ hardcode ไว้ การแทรกกลางทำให้ทุกไฟล์นั้น misalign
+  'probe_id',
 ] as const;
 
 /** Transform ที่นับจำนวนบรรทัดและคำนวณ sha256 ระหว่างที่ข้อมูลไหลผ่าน */

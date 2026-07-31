@@ -10,6 +10,7 @@ export const AppEvents = {
   CONFIG_CHANGED: 'config.changed',
   REPAIR_CHANGED: 'repair.changed',
   WARRANTY_CHANGED: 'warranty.changed',
+  FIRMWARE_CHANGED: 'firmware.changed',
 } as const;
 
 export type AppEventName = (typeof AppEvents)[keyof typeof AppEvents];

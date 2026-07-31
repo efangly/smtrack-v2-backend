@@ -9,8 +9,10 @@ import {
   buildLogs,
   cleanupByPrefix,
   seedDevice,
+  seedProbe,
   serialFor,
   withDeviceId,
+  withProbeId,
 } from './fixtures/seed-data';
 
 /**
@@ -23,6 +25,8 @@ describe('Analytics: logday + graph (e2e)', () => {
 
   const serial = serialFor(E2E_PREFIX, 1);
   let deviceId: string;
+  let probe1: string;
+  let probe2: string;
 
   beforeAll(async () => {
     const ctx = await createTestApp();
@@ -32,8 +36,18 @@ describe('Analytics: logday + graph (e2e)', () => {
     await cleanupByPrefix(prisma, E2E_PREFIX);
     ({ deviceId } = await seedDevice(prisma, buildDevices(E2E_PREFIX)[0]));
 
+    // 2 probe บน device เดียว — เคสจริงของตู้ที่มีหลายช่องวัด และเป็นเหตุผลที่กราฟต้องมีหลายเส้น
+    ({ id: probe1 } = await seedProbe(prisma, deviceId, { name: 'P1', channel: '1' }));
+    ({ id: probe2 } = await seedProbe(prisma, deviceId, { name: 'P2', channel: '2' }));
+
     // 72 ชม. — ครอบคลุมทั้งช่วง 24 ชม. ของ graph และหลายวันของ logday
-    await prisma.logDays.createMany({ data: withDeviceId(buildLogs(serial, 72), deviceId) });
+    await prisma.logDays.createMany({
+      data: withProbeId(withDeviceId(buildLogs(serial, 72, undefined, '1'), deviceId), probe1),
+    });
+    // probe 2 ส่งถี่ครึ่งเดียว — ยืนยันว่าแต่ละเส้นนับ sample ของตัวเอง ไม่ใช่หารเฉลี่ยรวม
+    await prisma.logDays.createMany({
+      data: withProbeId(withDeviceId(buildLogs(serial, 36, undefined, '2'), deviceId), probe2),
+    });
   });
 
   afterAll(async () => {
@@ -60,14 +74,49 @@ describe('Analytics: logday + graph (e2e)', () => {
       expect(row).toHaveProperty('maxTemp');
     });
 
-    it('รวมจำนวน samples ของทุก bucket ได้เท่ากับจำนวน log ทั้งหมด', async () => {
+    it('รวมจำนวน samples ของทุก bucket ได้เท่ากับจำนวน log ทั้งหมดของทั้งสอง probe', async () => {
       const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
 
       const total = unwrap(res.body).reduce(
         (sum: number, r: { samples: number }) => sum + Number(r.samples),
         0,
       );
-      expect(total).toBe(72);
+      expect(total).toBe(72 + 36);
+    });
+
+    it('แยก bucket ต่อ probe ไม่เฉลี่ยข้าม probe — แต่ละวันมีแถวของทั้งสอง probe', async () => {
+      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const rows = unwrap(res.body);
+
+      // ทุกแถวต้องระบุได้ว่าเป็นของ probe ไหน
+      for (const row of rows) {
+        expect([probe1, probe2]).toContain(row.probeId);
+        expect(['1', '2']).toContain(row.channel);
+      }
+
+      // วันที่ทั้งสอง probe ส่งข้อมูลต้องได้ 2 แถวแยกกัน ไม่ใช่ 1 แถวที่รวมกันแล้ว
+      const byDay = new Map<string, number>();
+      for (const row of rows) byDay.set(row.day, (byDay.get(row.day) ?? 0) + 1);
+      expect([...byDay.values()].some((n) => n === 2)).toBe(true);
+    });
+
+    it('samples รวมของแต่ละ probe ตรงกับจำนวนที่ seed ไว้ของ probe นั้น', async () => {
+      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+
+      const sumFor = (probeId: string) =>
+        unwrap(res.body)
+          .filter((r: { probeId: string }) => r.probeId === probeId)
+          .reduce((sum: number, r: { samples: number }) => sum + Number(r.samples), 0);
+
+      expect(sumFor(probe1)).toBe(72);
+      expect(sumFor(probe2)).toBe(36);
+    });
+
+    it('ชื่อ probe ติดมาจาก join ตาราง probes', async () => {
+      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+
+      const names = new Set(unwrap(res.body).map((r: { name: string }) => r.name));
+      expect(names).toEqual(new Set(['P1', 'P2']));
     });
 
     it('เรียง bucket จากใหม่ไปเก่า', async () => {
@@ -115,29 +164,155 @@ describe('Analytics: logday + graph (e2e)', () => {
   });
 
   describe('GET /graph/:serial', () => {
-    it('คืน time series แบ่งเป็นราย 1 ชั่วโมงในช่วง 24 ชม.', async () => {
+    /** series ของ probe ที่ระบุ จากผลลัพธ์ที่เป็น array ของ series */
+    const seriesFor = (body: { data: any }, probeId: string) =>
+      unwrap(body).find((s: { probeId: string }) => s.probeId === probeId);
+
+    it('คืน 1 series ต่อ 1 probe พร้อม threshold ของ probe นั้น', async () => {
       const res = await request(app.getHttpServer())
         .get(`${API_PREFIX}/graph/${serial}`)
         .set('Authorization', bearerUser());
 
       expect(res.status).toBe(200);
-      const points = unwrap(res.body);
-      expect(Array.isArray(points)).toBe(true);
-      expect(points.length).toBeGreaterThanOrEqual(20);
-      expect(points.length).toBeLessThanOrEqual(25);
+      const series = unwrap(res.body);
+      expect(Array.isArray(series)).toBe(true);
+      expect(series).toHaveLength(2);
 
-      expect(points[0]).toHaveProperty('bucket');
-      expect(points[0]).toHaveProperty('avgTemp');
-      expect(points[0]).toHaveProperty('avgHumidity');
+      expect(series.map((s: { channel: string }) => s.channel)).toEqual(['1', '2']);
+      for (const s of series) {
+        expect(s).toHaveProperty('tempMin');
+        expect(s).toHaveProperty('tempMax');
+        expect(s).toHaveProperty('humiMin');
+        expect(s).toHaveProperty('humiMax');
+        expect(Array.isArray(s.points)).toBe(true);
+      }
     });
 
-    it('เรียง bucket จากเก่าไปใหม่ (ตรงข้ามกับ logday)', async () => {
+    it('คืนค่าดิบ (ไม่ average) ของ log ในช่วง 24 ชม. ล่าสุด (default range=1d)', async () => {
       const res = await request(app.getHttpServer())
         .get(`${API_PREFIX}/graph/${serial}`)
         .set('Authorization', bearerUser());
 
-      const buckets = unwrap(res.body).map((r: { bucket: string }) => new Date(r.bucket).getTime());
-      expect(buckets).toEqual([...buckets].sort((a, b) => a - b));
+      const { points } = seriesFor(res.body, probe1);
+      // log ทุกชั่วโมง ย้อนหลัง 72 ชม. → 24 ชม.ล่าสุดมีประมาณ 24-25 แถว
+      expect(points.length).toBeGreaterThanOrEqual(20);
+      expect(points.length).toBeLessThanOrEqual(25);
+
+      expect(points[0]).toHaveProperty('sendTime');
+      expect(points[0]).toHaveProperty('temp');
+      expect(points[0]).toHaveProperty('humidity');
+      expect(points[0].deviceId).toBe(deviceId);
+    });
+
+    it('ข้อมูลของแต่ละ probe ไม่ปนกัน — ทุก point อยู่ในเส้นของ probe ตัวเอง', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ range: '7d' })
+        .set('Authorization', bearerUser());
+
+      for (const s of unwrap(res.body)) {
+        for (const p of s.points) {
+          expect(p.probeId).toBe(s.probeId);
+          expect(p.probe).toBe(s.channel);
+        }
+      }
+    });
+
+    it('probe ที่ส่งถี่น้อยกว่าได้ point น้อยกว่า (นับแยกเส้น ไม่ใช่กองเดียว)', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ range: '7d' })
+        .set('Authorization', bearerUser());
+
+      expect(seriesFor(res.body, probe1).points).toHaveLength(72);
+      expect(seriesFor(res.body, probe2).points).toHaveLength(36);
+    });
+
+    it('ไม่มี series unassigned เมื่อทุก log ถูกผูก probe ครบ', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ range: '7d' })
+        .set('Authorization', bearerUser());
+
+      expect(unwrap(res.body).every((s: { probeId: string | null }) => s.probeId !== null)).toBe(
+        true,
+      );
+    });
+
+    it('probeId ที่ระบุ → ได้เส้นเดียว', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ range: '7d', probeId: probe2 })
+        .set('Authorization', bearerUser());
+
+      expect(res.status).toBe(200);
+      const series = unwrap(res.body);
+      expect(series).toHaveLength(1);
+      expect(series[0].probeId).toBe(probe2);
+      expect(series[0].points).toHaveLength(36);
+    });
+
+    it('probeId ที่ไม่ใช่ uuid → 400', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ probeId: 'not-a-uuid' })
+        .set('Authorization', bearerUser());
+
+      expect(res.status).toBe(400);
+    });
+
+    it('เรียงจาก sendTime เก่าไปใหม่ในแต่ละเส้น (ตรงข้ามกับ logday)', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .set('Authorization', bearerUser());
+
+      for (const s of unwrap(res.body)) {
+        const times = s.points.map((r: { sendTime: string }) => new Date(r.sendTime).getTime());
+        expect(times).toEqual([...times].sort((a, b) => a - b));
+      }
+    });
+
+    it('range=7d คืน point มากกว่า range=1d (default) เพราะครอบคลุมช่วงเวลานานกว่า', async () => {
+      const resDay = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .set('Authorization', bearerUser());
+      const resWeek = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ range: '7d' })
+        .set('Authorization', bearerUser());
+
+      const dayPoints = seriesFor(resDay.body, probe1).points.length;
+      const weekPoints = seriesFor(resWeek.body, probe1).points.length;
+      expect(weekPoints).toBeGreaterThan(dayPoints);
+      // seed มีแค่ 72 ชม. ย้อนหลัง แม้ range=7d ก็ไม่เกินจำนวน log ที่มีจริง
+      expect(weekPoints).toBeLessThanOrEqual(72);
+    });
+
+    it('range=custom ใช้ from/to ที่ระบุ', async () => {
+      const to = new Date();
+      const from = new Date(to.getTime() - 3 * 60 * 60 * 1000);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ range: 'custom', from: from.toISOString(), to: to.toISOString() })
+        .set('Authorization', bearerUser());
+
+      expect(res.status).toBe(200);
+      for (const s of unwrap(res.body)) {
+        for (const p of s.points) {
+          const t = new Date(p.sendTime).getTime();
+          expect(t).toBeGreaterThanOrEqual(from.getTime());
+          expect(t).toBeLessThanOrEqual(to.getTime());
+        }
+      }
+    });
+
+    it('range=custom ไม่ระบุ from/to → 400', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/graph/${serial}`)
+        .query({ range: 'custom' })
+        .set('Authorization', bearerUser());
+
+      expect(res.status).toBe(400);
     });
 
     it('คืน 404 เมื่อไม่มีอุปกรณ์ตาม serial นั้น', async () => {

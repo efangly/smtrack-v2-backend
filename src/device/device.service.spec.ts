@@ -14,6 +14,8 @@ describe('DeviceService — device.changed event', () => {
     devices: { findUnique: jest.Mock; update: jest.Mock; create: jest.Mock };
     hardware: { upsert: jest.Mock; update: jest.Mock };
     deviceAssignments: { create: jest.Mock };
+    configs: { create: jest.Mock };
+    probes: { create: jest.Mock };
     $transaction: jest.Mock;
   };
   let emitter: { emit: jest.Mock };
@@ -25,6 +27,9 @@ describe('DeviceService — device.changed event', () => {
     online: true,
   };
 
+  const config = { id: 'cfg-1', deviceId: 'dev-1' };
+  const probe = { id: 'probe-1', deviceId: 'dev-1', name: 'P1' };
+
   const actor = { id: 'user-1', name: 'Somchai', role: 'ADMIN' };
 
   beforeEach(async () => {
@@ -32,6 +37,8 @@ describe('DeviceService — device.changed event', () => {
       devices: { findUnique: jest.fn(), update: jest.fn(), create: jest.fn() },
       hardware: { upsert: jest.fn(), update: jest.fn() },
       deviceAssignments: { create: jest.fn() },
+      configs: { create: jest.fn() },
+      probes: { create: jest.fn() },
       $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb(prisma)),
     };
     emitter = { emit: jest.fn() };
@@ -55,6 +62,8 @@ describe('DeviceService — device.changed event', () => {
 
   it('create ส่ง actor เข้า event device.changed ให้ audit ตามได้ว่าใครสร้าง', async () => {
     prisma.devices.create.mockResolvedValue(device);
+    prisma.configs.create.mockResolvedValue(config);
+    prisma.probes.create.mockResolvedValue(probe);
 
     await service.create({ staticName: 'OPD-01' } as never, undefined, actor);
 
@@ -66,11 +75,29 @@ describe('DeviceService — device.changed event', () => {
 
   it('create ไม่แนบ actor เมื่อไม่มีการส่งมา (ไม่ควรเกิดขึ้นจริงเพราะ route guard แล้ว)', async () => {
     prisma.devices.create.mockResolvedValue(device);
+    prisma.configs.create.mockResolvedValue(config);
+    prisma.probes.create.mockResolvedValue(probe);
 
     await service.create({ staticName: 'OPD-01' } as never);
 
     const [, payload] = emitter.emit.mock.calls[0] as [string, DeviceChangedEvent];
     expect(payload.actor).toBeUndefined();
+  });
+
+  it('create สร้าง Configs และ Probes default พ่วงไปกับ device ในทรานแซกชันเดียวกัน', async () => {
+    prisma.devices.create.mockResolvedValue(device);
+    prisma.configs.create.mockResolvedValue(config);
+    prisma.probes.create.mockResolvedValue(probe);
+
+    await service.create({ staticName: 'OPD-01' } as never, undefined, actor);
+
+    expect(prisma.configs.create).toHaveBeenCalledWith({ data: { deviceId: device.id } });
+    expect(prisma.probes.create).toHaveBeenCalledWith({ data: { deviceId: device.id } });
+
+    const configEvent = emitter.emit.mock.calls.find(([n]) => n === AppEvents.CONFIG_CHANGED);
+    const probeEvent = emitter.emit.mock.calls.find(([n]) => n === AppEvents.PROBE_CHANGED);
+    expect(configEvent?.[1]).toMatchObject({ action: 'created', config, actor });
+    expect(probeEvent?.[1]).toMatchObject({ action: 'created', probe, actor });
   });
 
   it('update ส่ง actor เข้า event device.changed ให้ audit ตามได้ว่าใครแก้ไข', async () => {

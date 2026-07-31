@@ -73,8 +73,11 @@ describe('Device swap: แยกจุดติดตั้งออกจาก
 
   it('สลับกล่องแล้ว config/probe ของจุดติดตั้งยังอยู่ครบ (ความต้องการข้อ 1)', async () => {
     await prisma.configs.create({ data: { deviceId: fridge.deviceId, ip: '10.0.0.9' } });
-    await prisma.probes.create({
-      data: { deviceId: fridge.deviceId, name: 'P1', tempMin: 2, tempMax: 8 },
+    // probe channel '1' ถูก auto-provision ไปแล้วตอน ingest ของเทสก่อนหน้า จึงตั้ง threshold
+    // ทับลงไปแทนการสร้างใหม่ (สร้างซ้ำจะชน unique (deviceId, channel))
+    await prisma.probes.update({
+      where: { deviceId_channel: { deviceId: fridge.deviceId, channel: '1' } },
+      data: { name: 'P1', tempMin: 2, tempMax: 8 },
     });
 
     await ingest(oldBox, 5.5); // รวมเป็น 2 แถวก่อนสลับ
@@ -158,5 +161,28 @@ describe('Device swap: แยกจุดติดตั้งออกจาก
     const log = await prisma.logDays.findFirst({ where: { serial: orphan } });
     expect(log).not.toBeNull();
     expect(log!.deviceId).toBeNull();
+    // ไม่มีจุดติดตั้ง = ไม่มี Probes ให้ผูก แต่ channel ดิบยังถูกเก็บไว้
+    expect(log!.probeId).toBeNull();
+    expect(log!.probe).toBe('1');
+  });
+
+  /**
+   * probe ผูกกับ Devices.id (จุดติดตั้ง) ไม่ใช่ serial ของกล่อง — สลับกล่องแล้ว log ใหม่
+   * จึงต้องผูก probe แถวเดิม ไม่ใช่ probe ใหม่ ไม่งั้นกราฟจะขาดเป็นสองเส้นตรงจุดที่สลับเครื่อง
+   */
+  it('สลับกล่องแล้ว log ใหม่ยังผูก probe แถวเดิมของจุดติดตั้ง', async () => {
+    const probe = await prisma.probes.findUniqueOrThrow({
+      where: { deviceId_channel: { deviceId: fridge.deviceId, channel: '1' } },
+    });
+
+    const logs = await prisma.logDays.findMany({
+      where: { deviceId: fridge.deviceId },
+      select: { serial: true, probeId: true },
+    });
+
+    // ทั้ง 4 แถว (2 จากกล่องเก่า + 2 จากกล่องใหม่) ชี้ probe เดียวกัน
+    expect(logs).toHaveLength(4);
+    expect(new Set(logs.map((l) => l.probeId))).toEqual(new Set([probe.id]));
+    expect(new Set(logs.map((l) => l.serial))).toEqual(new Set([oldBox, newBox]));
   });
 });

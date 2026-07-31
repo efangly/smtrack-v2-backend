@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export class QueryTelemetryDto extends PaginationQueryDto {
@@ -12,6 +12,19 @@ export class QueryTelemetryDto extends PaginationQueryDto {
   @IsString()
   @IsOptional()
   deviceId?: string;
+
+  /** กรองด้วย probe ตรง ๆ (Probes.id) — ใช้เมื่อรู้ probe อยู่แล้ว เช่นกดเจาะจากเส้นในกราฟ */
+  @IsUUID()
+  @IsOptional()
+  probeId?: string;
+
+  /**
+   * กรองด้วย channel ที่อุปกรณ์ส่งมา (`log_days.probe`) — ไม่ใช่ตัวเดียวกับ `probeId`
+   * channel ซ้ำได้ข้าม device จึงควรใช้คู่กับ `serial`/`deviceId` ไม่งั้นได้ log ของทุก device
+   */
+  @IsString()
+  @IsOptional()
+  probe?: string;
 
   @IsDateString()
   @IsOptional()
