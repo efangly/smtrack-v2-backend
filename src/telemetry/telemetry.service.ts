@@ -8,6 +8,7 @@ import { QueryTelemetryDto } from './dto/query-telemetry.dto';
 import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
+import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
@@ -21,6 +22,7 @@ export class TelemetryService {
     private readonly traceService: TraceService,
     private readonly metrics: MetricsService,
     private readonly assignments: DeviceAssignmentService,
+    private readonly probes: ProbeResolverService,
   ) {}
 
   /**
@@ -38,9 +40,15 @@ export class TelemetryService {
     // (เพิ่งซ่อมเสร็จ/อยู่ในคลัง) ซึ่งยังต้องเก็บ log ได้ ไม่ reject
     const deviceId = await this.assignments.resolveDeviceId(serial);
 
+    // ผูก log กับ probe (device -> probe -> logdays) เพื่อให้แยกเส้นกราฟ/rollup ต่อ probe ได้
+    // ไม่มี deviceId ก็ไม่มี Probes ให้ผูก — เก็บไว้แค่ channel ดิบในคอลัมน์ `probe`
+    const channel = dto.probe?.trim() || '1';
+    const probeId = deviceId ? await this.probes.resolveProbeId(deviceId, channel) : null;
+
     const data: Prisma.LogDaysCreateInput = {
       hardware: { connect: { serial } },
       ...(deviceId ? { device: { connect: { id: deviceId } } } : {}),
+      ...(probeId ? { probeRef: { connect: { id: probeId } } } : {}),
       temp: dto.temp,
       tempDisplay: dto.tempDisplay,
       humidity: dto.humidity,
@@ -51,7 +59,7 @@ export class TelemetryService {
       door2: dto.door2,
       door3: dto.door3,
       internet: dto.internet,
-      probe: dto.probe,
+      probe: channel,
       battery: dto.battery,
       tempInternal: dto.tempInternal,
       extMemory: dto.extMemory,
@@ -59,7 +67,7 @@ export class TelemetryService {
 
     return this.traceService.withSpan(
       'telemetry.ingest',
-      { 'device.serial': serial, 'db.system': 'postgresql' },
+      { 'device.serial': serial, 'probe.channel': channel, 'db.system': 'postgresql' },
       async (span) => {
         const startedAt = Date.now();
         const log = await this.prisma.logDays.create({ data });
@@ -78,6 +86,8 @@ export class TelemetryService {
     const where: Prisma.LogDaysWhereInput = {};
     if (query.serial) where.serial = query.serial;
     if (query.deviceId) where.deviceId = query.deviceId;
+    if (query.probeId) where.probeId = query.probeId;
+    if (query.probe) where.probe = query.probe;
     if (query.from || query.to) {
       where.sendTime = {};
       if (query.from) where.sendTime.gte = new Date(query.from);

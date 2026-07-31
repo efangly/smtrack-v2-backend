@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -8,6 +9,7 @@ import { RedisService } from '../../src/redis/redis.service';
 import { MqttClientService } from '../../src/mqtt/mqtt-client.service';
 import { FcmService } from '../../src/fcm/fcm.service';
 import { ObjectStorageService } from '../../src/backup/object-storage.service';
+import { FirmwareStorageService } from '../../src/firmware/firmware-storage.service';
 
 /**
  * Redis stub แบบ in-memory
@@ -38,6 +40,31 @@ export class InMemoryRedisStub {
   /** ไม่ cache — เรียก factory ทุกครั้งเพื่อให้ assertion เห็นสถานะ DB ล่าสุดเสมอ */
   async getOrSet<T>(_key: string, _ttl: number, factory: () => Promise<T>): Promise<T> {
     return factory();
+  }
+}
+
+/**
+ * S3 stub แบบ in-memory สำหรับ FirmwareStorageService
+ *
+ * ต่างจาก ObjectStorageService stub (no-op ล้วน) เพราะ e2e ต้องทดสอบ GET /firmware/download/:version
+ * จริง (ดาวน์โหลดไฟล์กลับมา stream ได้) ไม่ใช่แค่ยิง request แล้วเช็ค status code เฉย ๆ
+ */
+export class InMemoryFirmwareStorageStub {
+  private readonly store = new Map<string, Buffer>();
+
+  async upload(key: string, body: Buffer): Promise<string> {
+    this.store.set(key, body);
+    return key;
+  }
+
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+
+  async getStream(key: string): Promise<Readable> {
+    const body = this.store.get(key);
+    if (!body) throw new Error(`no object stored for key ${key}`);
+    return Readable.from(body);
   }
 }
 
@@ -114,6 +141,8 @@ export async function createTestApp(): Promise<TestAppContext> {
       getObjectStream: jest.fn(),
       deleteObject: jest.fn().mockResolvedValue(undefined),
     })
+    .overrideProvider(FirmwareStorageService)
+    .useClass(InMemoryFirmwareStorageStub)
     .compile();
 
   const app = moduleRef.createNestApplication();

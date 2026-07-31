@@ -139,11 +139,18 @@ export function buildDevices(prefix: string): DeviceSeed[] {
  * log ย้อนหลังทีละชั่วโมง — ต้องครอบคลุมหลายวันเพื่อให้ time_bucket ของ
  * logday (7 วัน) และ graph (24 ชม.) มีข้อมูลจริงให้ aggregate มากกว่า 1 bucket
  */
-export function buildLogs(serial: string, hours: number, now = new Date()): LogSeed[] {
+export function buildLogs(
+  serial: string,
+  hours: number,
+  now = new Date(),
+  channel = '1',
+): LogSeed[] {
+  // เลื่อนคลื่นตาม channel ให้ log ของแต่ละ probe มีค่าไม่เหมือนกัน — เทสจึงแยกเส้นออกจากกันได้จริง
+  const phase = Number(channel) || 1;
   return Array.from({ length: hours }, (_, i) => {
     const sendTime = new Date(now.getTime() - i * 60 * 60 * 1000);
     // temp เดินเป็นคลื่นในช่วง 2..8 °C ให้ avg/min/max ต่างกันจริง ตรวจสอบได้
-    const temp = Number((5 + 3 * Math.sin(i / 3)).toFixed(2));
+    const temp = Number((5 + 3 * Math.sin(i / 3 + phase)).toFixed(2));
     return {
       serial,
       temp,
@@ -154,7 +161,7 @@ export function buildLogs(serial: string, hours: number, now = new Date()): LogS
       plug: true,
       door1: i % 12 === 0,
       internet: true,
-      probe: '1',
+      probe: channel,
       battery: 100 - (i % 40),
     };
   });
@@ -204,6 +211,18 @@ export function withDeviceId<T extends object>(
   deviceId: string,
 ): (T & { deviceId: string })[] {
   return rows.map((row) => ({ ...row, deviceId }));
+}
+
+/**
+ * ประทับ probeId ให้ log ที่ insert ตรง ๆ — ด้วยเหตุผลเดียวกับ withDeviceId
+ * ปกติ TelemetryService.ingest resolve channel → probeId ให้ แต่ createMany ข้ามขั้นนั้น
+ * ทำให้ probe_id = NULL แล้ว graph จะเหมาโยนทุกแถวเข้า series `unassigned`
+ */
+export function withProbeId<T extends object>(
+  rows: T[],
+  probeId: string,
+): (T & { probeId: string })[] {
+  return rows.map((row) => ({ ...row, probeId }));
 }
 
 export function buildNotifications(serial: string): NotificationSeed[] {

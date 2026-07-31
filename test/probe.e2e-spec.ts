@@ -59,13 +59,39 @@ describe('Probes (e2e)', () => {
       const inDb = await prisma.probes.findUnique({ where: { id: probe.id } });
       expect(inDb).not.toBeNull();
     });
+
+    it('ไม่ส่ง channel → ได้ช่องถัดไปที่ยังว่างของ device นั้น ไม่ชนกับที่มีอยู่', async () => {
+      const before = await prisma.probes.findMany({
+        where: { deviceId },
+        select: { channel: true },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`${API_PREFIX}/devices/${deviceId}/probes`)
+        .set('Authorization', bearerUser())
+        .send({ name: 'auto' });
+
+      expect(res.status).toBe(201);
+      expect(before.map((p) => p.channel)).not.toContain(unwrap(res.body).channel);
+    });
+
+    it('channel ซ้ำใน device เดียวกัน → 409 (business key ของการ resolve probe ตอน ingest)', async () => {
+      const existing = await prisma.probes.findFirst({ where: { deviceId } });
+
+      const res = await request(app.getHttpServer())
+        .post(`${API_PREFIX}/devices/${deviceId}/probes`)
+        .set('Authorization', bearerUser())
+        .send({ name: 'dup', channel: existing!.channel });
+
+      expect(res.status).toBe(409);
+    });
   });
 
   describe('GET /devices/:deviceId/probes และ /probes/:id', () => {
     let probeId: string;
 
     beforeAll(async () => {
-      const created = await prisma.probes.create({ data: { deviceId, name: 'P2' } });
+      const created = await prisma.probes.create({ data: { deviceId, name: 'P2', channel: '7' } });
       probeId = created.id;
     });
 
@@ -95,7 +121,9 @@ describe('Probes (e2e)', () => {
 
   describe('PUT /probes/:id', () => {
     it('ปฏิเสธ role ที่ไม่มีสิทธิ์ (USER ไม่ใช่ SUPER/SERVICE/ADMIN)', async () => {
-      const created = await prisma.probes.create({ data: { deviceId, name: 'P3-forbidden' } });
+      const created = await prisma.probes.create({
+        data: { deviceId, name: 'P3-forbidden', channel: '8' },
+      });
 
       const res = await request(app.getHttpServer())
         .put(`${API_PREFIX}/probes/${created.id}`)
@@ -106,7 +134,7 @@ describe('Probes (e2e)', () => {
     });
 
     it('แก้ probe ได้และบันทึก user audit ของผู้แก้', async () => {
-      const created = await prisma.probes.create({ data: { deviceId, name: 'P3' } });
+      const created = await prisma.probes.create({ data: { deviceId, name: 'P3', channel: '9' } });
 
       const res = await request(app.getHttpServer())
         .put(`${API_PREFIX}/probes/${created.id}`)
@@ -131,7 +159,9 @@ describe('Probes (e2e)', () => {
 
   describe('DELETE /probes/:id', () => {
     it('ปฏิเสธ role ที่ไม่มีสิทธิ์ (USER ไม่ใช่ SUPER/SERVICE/ADMIN)', async () => {
-      const created = await prisma.probes.create({ data: { deviceId, name: 'P4-forbidden' } });
+      const created = await prisma.probes.create({
+        data: { deviceId, name: 'P4-forbidden', channel: '10' },
+      });
 
       const res = await request(app.getHttpServer())
         .delete(`${API_PREFIX}/probes/${created.id}`)
@@ -141,7 +171,7 @@ describe('Probes (e2e)', () => {
     });
 
     it('ลบ probe ได้และบันทึก user audit action deleted', async () => {
-      const created = await prisma.probes.create({ data: { deviceId, name: 'P4' } });
+      const created = await prisma.probes.create({ data: { deviceId, name: 'P4', channel: '11' } });
 
       const res = await request(app.getHttpServer())
         .delete(`${API_PREFIX}/probes/${created.id}`)

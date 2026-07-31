@@ -44,6 +44,17 @@ export interface AppConfig {
       region: string;
     };
   };
+  firmware: {
+    maxFileSize: number;
+    s3: {
+      endpoint?: string;
+      accessKey: string;
+      secretKey: string;
+      bucket: string;
+      forcePathStyle: boolean;
+      region: string;
+    };
+  };
   observability: {
     serviceName: string;
     serviceVersion: string;
@@ -107,6 +118,21 @@ export default (): AppConfig => ({
           ? process.env.DEVICE_S3_FORCE_PATH_STYLE === 'true'
           : process.env.ARCHIVE_S3_FORCE_PATH_STYLE === 'true',
       region: process.env.DEVICE_S3_REGION || process.env.ARCHIVE_S3_REGION || 'us-east-1',
+    },
+  },
+  // เหตุผลเดียวกับ device.s3 — ถ้าเป็น MinIO/S3 ตัวเดียวกับ archive ตั้งแค่ FIRMWARE_S3_BUCKET ก็พอ
+  firmware: {
+    maxFileSize: parseInt(process.env.FIRMWARE_MAX_FILE_SIZE ?? `${100 * 1024 * 1024}`, 10),
+    s3: {
+      endpoint: process.env.FIRMWARE_S3_ENDPOINT || process.env.ARCHIVE_S3_ENDPOINT || undefined,
+      accessKey: process.env.FIRMWARE_S3_ACCESS_KEY || process.env.ARCHIVE_S3_ACCESS_KEY || '',
+      secretKey: process.env.FIRMWARE_S3_SECRET_KEY || process.env.ARCHIVE_S3_SECRET_KEY || '',
+      bucket: process.env.FIRMWARE_S3_BUCKET ?? 'smtrack-firmware',
+      forcePathStyle:
+        process.env.FIRMWARE_S3_FORCE_PATH_STYLE != null
+          ? process.env.FIRMWARE_S3_FORCE_PATH_STYLE === 'true'
+          : process.env.ARCHIVE_S3_FORCE_PATH_STYLE === 'true',
+      region: process.env.FIRMWARE_S3_REGION || process.env.ARCHIVE_S3_REGION || 'us-east-1',
     },
   },
   // หมายเหตุ: tracing.ts รันก่อน Nest bootstrap จึงอ่าน process.env ตรง ไม่ผ่าน ConfigService

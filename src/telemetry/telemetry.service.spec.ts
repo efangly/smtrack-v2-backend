@@ -7,6 +7,7 @@ import { CreateTelemetryDto } from './dto/create-telemetry.dto';
 import { MetricsService } from '../observability/metrics.service';
 import { createMetricsMock, observabilityTestProviders } from '../observability/testing';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
+import { ProbeResolverService } from '../probe/probe-resolver.service';
 
 describe('TelemetryService', () => {
   let service: TelemetryService;
@@ -14,6 +15,7 @@ describe('TelemetryService', () => {
   let emitter: { emit: jest.Mock };
   let metrics: jest.Mocked<MetricsService>;
   let assignments: { resolveDeviceId: jest.Mock };
+  let probes: { resolveProbeId: jest.Mock };
 
   beforeEach(async () => {
     prisma = { logDays: { create: jest.fn(), findMany: jest.fn(), count: jest.fn() } };
@@ -21,6 +23,7 @@ describe('TelemetryService', () => {
     metrics = createMetricsMock();
     // ค่า default: กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1
     assignments = { resolveDeviceId: jest.fn().mockResolvedValue('dev-1') };
+    probes = { resolveProbeId: jest.fn().mockResolvedValue('probe-1') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -28,6 +31,7 @@ describe('TelemetryService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: emitter },
         { provide: DeviceAssignmentService, useValue: assignments },
+        { provide: ProbeResolverService, useValue: probes },
         ...observabilityTestProviders(metrics),
       ],
     }).compile();
@@ -91,6 +95,62 @@ describe('TelemetryService', () => {
   it('ปฏิเสธเมื่อ serial เป็นช่องว่างล้วน', async () => {
     await expect(service.ingest({ serial: '   ', temp: 4 })).rejects.toThrow(/serial is required/);
     expect(prisma.logDays.create).not.toHaveBeenCalled();
+  });
+
+  describe('ผูก probe', () => {
+    beforeEach(() =>
+      prisma.logDays.create.mockResolvedValue({
+        id: 'x',
+        serial: 'SN-1',
+        sendTime: new Date(),
+      }),
+    );
+
+    const createArg = () => prisma.logDays.create.mock.calls[0][0].data;
+
+    it('resolve probeId จาก channel ที่ส่งมา แล้ว connect เข้า log', async () => {
+      await service.ingest({ serial: 'SN-1', probe: '2', temp: 4 });
+
+      expect(probes.resolveProbeId).toHaveBeenCalledWith('dev-1', '2');
+      expect(createArg().probeRef).toEqual({ connect: { id: 'probe-1' } });
+      expect(createArg().probe).toBe('2');
+    });
+
+    it('ไม่ส่ง probe มา → default channel เป็น "1"', async () => {
+      await service.ingest({ serial: 'SN-1', temp: 4 });
+
+      expect(probes.resolveProbeId).toHaveBeenCalledWith('dev-1', '1');
+      expect(createArg().probe).toBe('1');
+    });
+
+    it('probe เป็นช่องว่างล้วน → ถือว่าไม่ได้ส่งมา ใช้ "1"', async () => {
+      await service.ingest({ serial: 'SN-1', probe: '  ', temp: 4 });
+
+      expect(probes.resolveProbeId).toHaveBeenCalledWith('dev-1', '1');
+      expect(createArg().probe).toBe('1');
+    });
+
+    it('กล่องที่ยังไม่ถูกติดตั้ง → ไม่ผูก probe แต่ยังเก็บ channel ดิบไว้', async () => {
+      assignments.resolveDeviceId.mockResolvedValue(null);
+
+      await service.ingest({ serial: 'SN-1', probe: '3', temp: 4 });
+
+      expect(probes.resolveProbeId).not.toHaveBeenCalled();
+      expect(createArg().probeRef).toBeUndefined();
+      expect(createArg().device).toBeUndefined();
+      expect(createArg().probe).toBe('3');
+    });
+  });
+
+  it('find กรองด้วย probeId และ channel ได้', async () => {
+    prisma.logDays.findMany.mockResolvedValue([]);
+    prisma.logDays.count.mockResolvedValue(0);
+
+    await service.find({ deviceId: 'dev-1', probeId: 'probe-2', probe: '2' });
+
+    const { where } = prisma.logDays.findMany.mock.calls[0][0];
+    expect(where.probeId).toBe('probe-2');
+    expect(where.probe).toBe('2');
   });
 
   it('บันทึกเวลาที่ใช้ ingest เป็น metric', async () => {

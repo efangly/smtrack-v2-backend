@@ -56,6 +56,15 @@ describe('Devices (e2e)', () => {
       expect(inDb).not.toBeNull();
       expect(inDb!.ward).toBe(dto.ward);
 
+      // สร้าง device ต้องพ่วง Configs และ Probes default มาด้วยเสมอ
+      const config = await prisma.configs.findUnique({ where: { deviceId: device.id } });
+      expect(config).not.toBeNull();
+      const probes = await prisma.probes.findMany({ where: { deviceId: device.id } });
+      expect(probes).toHaveLength(1);
+      expect(probes[0].name).toBe('P1');
+      // channel '1' คือ business key ที่ ingest ใช้ resolve probe ของ log ที่ไม่ระบุ probe
+      expect(probes[0].channel).toBe('1');
+
       // audit listener ทำงานแบบ async (EventEmitter2) — รอให้ event loop ว่างก่อนอ่าน
       await new Promise((resolve) => setImmediate(resolve));
       const audits = await prisma.deviceAudit.findMany({ where: { deviceId: device.id } });

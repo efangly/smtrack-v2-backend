@@ -20,6 +20,7 @@ import { ProbeModule } from './probe/probe.module';
 import { DeviceConfigModule } from './device-config/device-config.module';
 import { DeviceRepairModule } from './device-repair/device-repair.module';
 import { WarrantiesModule } from './warranties/warranties.module';
+import { FirmwareModule } from './firmware/firmware.module';
 import { UserAuditModule } from './user-audit/user-audit.module';
 import { LogdayModule } from './logday/logday.module';
 import { GraphModule } from './graph/graph.module';
@@ -60,6 +61,7 @@ import { MobileModule } from './mobile/mobile.module';
     DeviceConfigModule,
     DeviceRepairModule,
     WarrantiesModule,
+    FirmwareModule,
     UserAuditModule,
     // supporting modules
     LogdayModule,

@@ -29,9 +29,31 @@ export class ProbeService {
   }
 
   async create(deviceId: string, dto: CreateProbeDto, actor?: DeviceChangeActor): Promise<Probes> {
-    const probe = await this.prisma.probes.create({ data: { ...dto, deviceId } });
+    // (deviceId, channel) unique แล้ว และทุก device มี probe channel '1' ติดมาตั้งแต่ถูกสร้าง
+    // (device.service.ts สร้าง probe default ให้) ถ้าไม่ default channel ให้ POST ที่ไม่ส่ง channel
+    // จะ 409 ทุกครั้งซึ่งไม่ใช่พฤติกรรมที่ผู้ใช้คาด — เดาช่องถัดไปให้แทน
+    const channel = dto.channel ?? (await this.nextChannel(deviceId));
+    const probe = await this.prisma.probes.create({ data: { ...dto, channel, deviceId } });
     this.emitChanged('created', probe, actor);
     return probe;
+  }
+
+  /**
+   * ช่องว่างถัดไปของ device — นับจากเลข channel ที่มากสุดที่เป็นตัวเลข
+   *
+   * channel เป็น String (อุปกรณ์บางรุ่นส่งไม่ใช่ตัวเลข) จึงกรองเฉพาะที่เป็นตัวเลขมาคิด
+   * ยังชนกันได้ถ้ามีสอง request พร้อมกัน — ปล่อยให้ P2002 → 409 ตอบไป ไม่ต้อง lock
+   */
+  private async nextChannel(deviceId: string): Promise<string> {
+    const probes = await this.prisma.probes.findMany({
+      where: { deviceId },
+      select: { channel: true },
+    });
+    const highest = probes.reduce((max, { channel }) => {
+      const n = Number(channel);
+      return Number.isInteger(n) && n > max ? n : max;
+    }, 0);
+    return String(highest + 1);
   }
 
   async findAllByDevice(

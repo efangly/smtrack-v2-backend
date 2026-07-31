@@ -6,6 +6,7 @@ import { MqttClientService } from '../mqtt/mqtt-client.service';
 import { SseService } from '../sse/sse.service';
 import { FcmService } from '../fcm/fcm.service';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
+import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { MetricsService } from '../observability/metrics.service';
 import { createMetricsMock, observabilityTestProviders } from '../observability/testing';
 
@@ -17,6 +18,8 @@ describe('NotificationService', () => {
   let sse: { broadcast: jest.Mock };
   let fcm: { pushToSerial: jest.Mock };
   let metrics: jest.Mocked<MetricsService>;
+  let assignments: { resolveDeviceId: jest.Mock; resolveWard: jest.Mock };
+  let probes: { resolveProbeId: jest.Mock };
 
   const baseNotif = { id: 'n1', serial: 'SN-1', message: 'hi', detail: 'd' };
 
@@ -39,6 +42,12 @@ describe('NotificationService', () => {
       pushToSerial: jest.fn().mockResolvedValue({ topic: 'device_SN-1', sent: true }),
     };
     metrics = createMetricsMock();
+    // กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1 — notification ถูกประทับ deviceId เช่นเดียวกับ log
+    assignments = {
+      resolveDeviceId: jest.fn().mockResolvedValue('dev-1'),
+      resolveWard: jest.fn().mockResolvedValue('OPD'),
+    };
+    probes = { resolveProbeId: jest.fn().mockResolvedValue('probe-1') };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -48,19 +57,71 @@ describe('NotificationService', () => {
         { provide: MqttClientService, useValue: mqtt },
         { provide: SseService, useValue: sse },
         { provide: FcmService, useValue: fcm },
-        {
-          provide: DeviceAssignmentService,
-          // กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1 — notification ถูกประทับ deviceId เช่นเดียวกับ log
-          useValue: {
-            resolveDeviceId: jest.fn().mockResolvedValue('dev-1'),
-            resolveWard: jest.fn().mockResolvedValue('OPD'),
-          },
-        },
+        { provide: DeviceAssignmentService, useValue: assignments },
+        { provide: ProbeResolverService, useValue: probes },
         ...observabilityTestProviders(metrics),
       ],
     }).compile();
 
     service = module.get(NotificationService);
+  });
+
+  const createArg = () => prisma.notifications.create.mock.calls[0][0].data;
+
+  describe('ผูก probe ต้นเหตุ', () => {
+    it('ส่ง probe channel มา → resolve เป็น probeId แล้วเก็บทั้งสองค่า', async () => {
+      await service.create({ serial: 'SN-1', message: 'PROBE/TEMP/OVER', probe: '2' });
+
+      expect(probes.resolveProbeId).toHaveBeenCalledWith('dev-1', '2');
+      expect(createArg()).toMatchObject({ probeId: 'probe-1', probe: '2' });
+    });
+
+    it('ไม่ส่ง probe มา → ถือเป็นการแจ้งเตือนระดับกล่อง ไม่ผูก probe', async () => {
+      await service.create({ serial: 'SN-1', message: 'AC/OFF' });
+
+      expect(probes.resolveProbeId).not.toHaveBeenCalled();
+      expect(createArg()).toMatchObject({ probeId: null, probe: null });
+    });
+
+    it('probe เป็นช่องว่างล้วน → ถือว่าไม่ได้ส่งมา', async () => {
+      await service.create({ serial: 'SN-1', message: 'AC/OFF', probe: '   ' });
+
+      expect(probes.resolveProbeId).not.toHaveBeenCalled();
+      expect(createArg().probe).toBeNull();
+    });
+
+    it('กล่องที่ยังไม่ถูกติดตั้ง → ไม่ผูก probe แต่ยังเก็บ channel ดิบ', async () => {
+      assignments.resolveDeviceId.mockResolvedValue(null);
+
+      await service.create({ serial: 'SN-1', message: 'PROBE/TEMP/OVER', probe: '2' });
+
+      expect(probes.resolveProbeId).not.toHaveBeenCalled();
+      expect(createArg()).toMatchObject({ deviceId: null, probeId: null, probe: '2' });
+    });
+
+    it('probe ติดไปใน data ของ FCM (topic ยังเป็นระดับกล่อง ไม่แตกต่อ probe)', async () => {
+      prisma.notifications.create.mockResolvedValue({
+        ...baseNotif,
+        probe: '2',
+        probeId: 'probe-1',
+      });
+
+      await service.create({ serial: 'SN-1', message: 'PROBE/TEMP/OVER', probe: '2' });
+
+      expect(fcm.pushToSerial).toHaveBeenCalledWith(
+        'SN-1',
+        expect.anything(),
+        expect.objectContaining({ probe: '2', probeId: 'probe-1' }),
+      );
+    });
+
+    it('notification ที่ไม่มี probe ไม่ยัด key ว่างเข้า data ของ FCM', async () => {
+      await service.create({ serial: 'SN-1', message: 'AC/OFF' });
+
+      const data = fcm.pushToSerial.mock.calls[0][2];
+      expect(data).not.toHaveProperty('probe');
+      expect(data).not.toHaveProperty('probeId');
+    });
   });
 
   it('fan-out ครบ MQTT + SSE + FCM แล้ว set delivered flags = true', async () => {

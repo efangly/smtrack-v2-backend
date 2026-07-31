@@ -15,7 +15,7 @@ import { ObjectStorageService } from './object-storage.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PG_POOL } from './backup.tokens';
 import { AppConfig } from '../config/configuration';
-import { ArchiveMeta } from './archive-export.service';
+import { ArchiveMeta, LOG_DAYS_COLUMNS } from './archive-export.service';
 import {
   archiveObjectKey,
   isMonthString,
@@ -31,8 +31,9 @@ export interface RestoreResult {
 }
 
 /**
- * ลำดับคอลัมน์ของไฟล์ที่ export ไว้ "ก่อน" จะมีคอลัมน์ device_id
+ * ลำดับคอลัมน์ของไฟล์ที่ export ไว้ "ก่อน" จะมีคอลัมน์ device_id (และก่อน probe_id ที่มาทีหลัง)
  * ใช้เมื่อไฟล์ meta ไม่มีฟิลด์ `columns` (ไฟล์เก่า) — ห้ามแก้ลำดับนี้ ไม่งั้น backup เก่าจะ restore ไม่ได้
+ * คอลัมน์ที่ไม่อยู่ในชุดนี้ (device_id, probe_id) จะถูก COPY ปล่อยเป็น NULL ซึ่งถูกต้องแล้ว
  */
 const LEGACY_LOG_DAY_ARCHIVE_COLUMNS = [
   'id',
@@ -118,6 +119,7 @@ export class ArchiveRestoreService {
       ? await this.storage.getJson<ArchiveMeta>(metaObjectKey(month))
       : undefined;
     const fileColumns = meta?.columns ?? LEGACY_LOG_DAY_ARCHIVE_COLUMNS;
+    this.assertKnownColumns(fileColumns);
 
     this.logger.log(`restoring ${month} from s3://${this.storage.bucket}/${key}`);
     const client = await this.pool.connect();
@@ -169,6 +171,21 @@ export class ArchiveRestoreService {
     await this.prisma.archiveRestore.delete({ where: { month: from } });
 
     return { month, removedRows: res.rowCount ?? 0 };
+  }
+
+  /**
+   * ชื่อคอลัมน์จาก meta ถูกต่อเข้า COPY statement ตรง ๆ — ตรวจว่ารู้จักทุกตัวก่อน
+   * ทั้งกัน SQL injection ผ่านไฟล์ meta ที่ถูกแก้ และให้ error ที่อ่านรู้เรื่องเมื่อไฟล์เสีย
+   * แทน error ดิบจาก Postgres ที่ไม่บอกว่าไฟล์ไหนผิด
+   */
+  private assertKnownColumns(columns: readonly string[]): void {
+    const known = new Set<string>(LOG_DAYS_COLUMNS);
+    const unknown = columns.filter((c) => !known.has(c));
+    if (unknown.length > 0) {
+      throw new BadRequestException(
+        `ไฟล์ meta ระบุคอลัมน์ที่ไม่รู้จัก: ${unknown.join(', ')} — ไฟล์อาจถูกแก้หรือมาจาก schema อื่น`,
+      );
+    }
   }
 
   private assertValidMonth(month: string): asserts month is MonthString {
