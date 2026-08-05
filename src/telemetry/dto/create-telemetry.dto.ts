@@ -2,20 +2,19 @@ import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, IsDateString } from '
 import { Transform } from 'class-transformer';
 
 /**
- * เวลาที่อุปกรณ์/ต้นทางส่งมาโดยไม่ระบุ timezone เป็นเวลาท้องถิ่น Asia/Bangkok (UTC+7) เสมอ — ไม่ใช่ UTC
- *
- * `new Date("2026-08-01 10:00:00")` ตีความเป็น "เวลาท้องถิ่นของ server" ⇒ เวลาที่บันทึกจะ
- * เพี้ยนไปตาม TZ ของเครื่องที่รันแบบเงียบ ๆ โดยไม่มี error ให้ผนวก `+07:00` ตั้งแต่ชั้น DTO
- * เพื่อให้ทุกช่องทาง (MQTT / HTTP / RabbitMQ) แปลงเป็น UTC ตรงกันหมด (เดิมผนวก `Z` ตรง ๆ ซึ่งเพี้ยน
- * +7 ชั่วโมงเพราะ mark เวลาท้องถิ่นเป็น UTC ทั้งที่ไม่ใช่ — ทำให้ query ตามช่วงเวลา (graph/logday)
- * มองข้อมูลล่าสุดว่าอยู่ "อนาคต" แล้วกรองทิ้งไป)
- * ค่าที่ระบุ timezone มาแล้ว (`Z` หรือ `±HH:MM`) ปล่อยผ่านตามเดิม — ไทยไม่มี DST จึง offset คงที่ได้
+ * เวลาที่อุปกรณ์/ต้นทางส่งมาเป็นเวลาท้องถิ่น Asia/Bangkok (UTC+7) เสมอ — ไม่ใช่ UTC แม้ตัว
+ * payload บางรุ่นจะแปะ `Z` ต่อท้ายมาเองก็ตาม (ยืนยันจาก log จริง: device ส่ง
+ * `"...T21:52:07.000Z"` ในขณะที่เวลา UTC จริงคือ `14:52:07Z` — ตัวเลขนาฬิกาที่ส่งมาคือเวลาไทย
+ * ทั้งดุ้น เพียงแต่ firmware ใส่ `Z` ผิด ๆ ต่อท้ายเสมอ) ดังนั้นห้ามเชื่อ timezone suffix ที่
+ * อุปกรณ์ส่งมาไม่ว่าจะมีหรือไม่มี — ต้องตัดทิ้งแล้วตีความตัวเลขนาฬิกาเป็นเวลาไทยใหม่ทุกครั้ง
+ * ก่อนผนวก `+07:00` เพื่อแปลงเป็น UTC ที่ถูกต้อง ให้ทุกช่องทาง (MQTT / HTTP / RabbitMQ) ตรงกันหมด
+ * ไทยไม่มี DST จึง offset คงที่ได้
  */
 export function normalizeToUtcIso(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
-  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)) return trimmed;
-  const isoish = trimmed.replace(' ', 'T');
+  const withoutTz = trimmed.replace(/(?:Z|[+-]\d{2}:?\d{2})$/i, '');
+  const isoish = withoutTz.replace(' ', 'T');
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(isoish)
     ? `${isoish}+07:00`
     : value;
