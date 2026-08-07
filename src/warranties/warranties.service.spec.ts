@@ -90,4 +90,46 @@ describe('WarrantiesService', () => {
       expect.objectContaining({ action: 'updated' }),
     );
   });
+
+  it('findAll ไม่มี search/expiringSoon → where เป็น undefined', async () => {
+    prisma.warranties.findMany.mockResolvedValue([]);
+    prisma.warranties.count.mockResolvedValue(0);
+
+    await service.findAll({ page: 1, limit: 20 } as never);
+
+    expect(prisma.warranties.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
+    expect(prisma.warranties.count).toHaveBeenCalledWith({ where: undefined });
+  });
+
+  it('findAll มี search → OR-match devName/customerName/product/model', async () => {
+    prisma.warranties.findMany.mockResolvedValue([]);
+    prisma.warranties.count.mockResolvedValue(0);
+
+    await service.findAll({ page: 1, limit: 20, search: 'fridge' } as never);
+
+    const expectedWhere = {
+      where: {
+        OR: [
+          { devName: { contains: 'fridge', mode: 'insensitive' } },
+          { customerName: { contains: 'fridge', mode: 'insensitive' } },
+          { product: { contains: 'fridge', mode: 'insensitive' } },
+          { model: { contains: 'fridge', mode: 'insensitive' } },
+        ],
+      },
+    };
+    expect(prisma.warranties.count).toHaveBeenCalledWith(expectedWhere);
+  });
+
+  it('findAll expiringSoon=true → status=true และ expire ภายใน 30 วัน', async () => {
+    prisma.warranties.findMany.mockResolvedValue([]);
+    prisma.warranties.count.mockResolvedValue(0);
+
+    await service.findAll({ page: 1, limit: 20, expiringSoon: true } as never);
+
+    expect(prisma.warranties.count).toHaveBeenCalledWith({
+      where: { status: true, expire: { gte: expect.any(Date), lte: expect.any(Date) } },
+    });
+  });
 });

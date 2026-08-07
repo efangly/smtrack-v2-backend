@@ -57,15 +57,6 @@ describe('SseService', () => {
     expect(events[0].type).toBe('telemetry');
   });
 
-  it('handleNotificationCreated broadcast เข้า channel notification', async () => {
-    const collected = firstValueFrom(
-      service.streamFor('notification', SUPER).pipe(take(1), toArray()),
-    );
-    await service.handleNotificationCreated({ id: 'n2', serial: 'SN-1' });
-    const events = (await collected) as MessageEvent[];
-    expect(events[0].data).toEqual({ id: 'n2', serial: 'SN-1' });
-  });
-
   it('handleDeviceChanged broadcast เข้า channel device', async () => {
     const collected = firstValueFrom(service.streamFor('device', SUPER).pipe(take(1), toArray()));
     service.handleDeviceChanged({

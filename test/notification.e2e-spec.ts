@@ -18,6 +18,7 @@ describe('Notifications (e2e)', () => {
   let mocks: TestAppMocks;
 
   const serial = serialFor(E2E_PREFIX, 1);
+  let deviceId: string;
 
   beforeAll(async () => {
     const ctx = await createTestApp();
@@ -26,7 +27,7 @@ describe('Notifications (e2e)', () => {
     mocks = ctx.mocks;
 
     await cleanupByPrefix(prisma, E2E_PREFIX);
-    await seedDevice(prisma, buildDevices(E2E_PREFIX)[0]);
+    ({ deviceId } = await seedDevice(prisma, buildDevices(E2E_PREFIX)[0]));
   });
 
   afterAll(async () => {
@@ -61,7 +62,7 @@ describe('Notifications (e2e)', () => {
       expect(inDb!.deliveredFcm).toBe(true);
     });
 
-    it('publish ผ่าน MQTT topic ของ serial นั้น', async () => {
+    it('publish ผ่าน MQTT topic ของ deviceId (จุดติดตั้ง) ไม่ใช่ serial ของกล่อง', async () => {
       const dto = buildNotifications(serial)[1];
 
       await request(app.getHttpServer())
@@ -71,7 +72,7 @@ describe('Notifications (e2e)', () => {
 
       expect(mocks.mqtt.publishNotification).toHaveBeenCalledTimes(1);
       expect(mocks.mqtt.publishNotification).toHaveBeenCalledWith(
-        serial,
+        deviceId,
         expect.objectContaining({ serial, message: dto.message }),
       );
     });

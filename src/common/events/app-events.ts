@@ -4,7 +4,6 @@
  */
 export const AppEvents = {
   TELEMETRY_CREATED: 'telemetry.created',
-  NOTIFICATION_CREATED: 'notification.created',
   DEVICE_CHANGED: 'device.changed',
   PROBE_CHANGED: 'probe.changed',
   CONFIG_CHANGED: 'config.changed',

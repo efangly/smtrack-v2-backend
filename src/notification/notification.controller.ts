@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -60,6 +61,28 @@ export class NotificationController {
     @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<NotificationDashboardCount> {
     return this.notificationService.findCount(req.user);
+  }
+
+  // ต้องมาก่อน :serial ด้วยเหตุผลเดียวกับ dashboard/count
+  @Get('unread-count')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('jwt')
+  findUnreadCount(@Req() req: Request & { user: JwtPayloadDto }): Promise<{ count: number }> {
+    return this.notificationService.findUnreadCount(req.user).then((count) => ({ count }));
+  }
+
+  @Post('read-all')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('jwt')
+  markAllRead(@Req() req: Request & { user: JwtPayloadDto }): Promise<{ count: number }> {
+    return this.notificationService.markAllRead(req.user);
+  }
+
+  @Patch(':id/read')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('jwt')
+  markRead(@Param('id') id: string): Promise<Notifications> {
+    return this.notificationService.markRead(id);
   }
 
   @Get(':serial')

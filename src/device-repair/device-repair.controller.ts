@@ -1,4 +1,15 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Repairs } from '../generated/prisma/client';
@@ -53,5 +64,10 @@ export class DeviceRepairController {
     @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<Repairs> {
     return this.repairService.update(id, dto, req.user);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string, @Req() req: Request & { user: JwtPayloadDto }): Promise<Repairs> {
+    return this.repairService.remove(id, req.user);
   }
 }

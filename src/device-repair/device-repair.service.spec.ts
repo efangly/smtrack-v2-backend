@@ -8,7 +8,13 @@ import { AppEvents } from '../common/events/app-events';
 describe('DeviceRepairService', () => {
   let service: DeviceRepairService;
   let prisma: {
-    repairs: { create: jest.Mock; findMany: jest.Mock; findUnique: jest.Mock; update: jest.Mock };
+    repairs: {
+      create: jest.Mock;
+      findMany: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      delete: jest.Mock;
+    };
   };
   let events: { emit: jest.Mock };
 
@@ -17,7 +23,13 @@ describe('DeviceRepairService', () => {
 
   beforeEach(async () => {
     prisma = {
-      repairs: { create: jest.fn(), findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+      repairs: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn(),
+      },
     };
     events = { emit: jest.fn() };
 
@@ -77,5 +89,26 @@ describe('DeviceRepairService', () => {
       AppEvents.REPAIR_CHANGED,
       expect.objectContaining({ action: 'updated' }),
     );
+  });
+
+  it('remove ลบรายการซ่อมแล้ว emit repair.changed (deleted)', async () => {
+    prisma.repairs.findUnique.mockResolvedValue(repair);
+    prisma.repairs.delete.mockResolvedValue(repair);
+
+    const result = await service.remove('rep-1', actor);
+
+    expect(prisma.repairs.delete).toHaveBeenCalledWith({ where: { id: 'rep-1' } });
+    expect(events.emit).toHaveBeenCalledWith(
+      AppEvents.REPAIR_CHANGED,
+      expect.objectContaining({ action: 'deleted', repairId: 'rep-1' }),
+    );
+    expect(result).toEqual(repair);
+  });
+
+  it('remove โยน NotFoundException ถ้าไม่พบรายการซ่อม', async () => {
+    prisma.repairs.findUnique.mockResolvedValue(null);
+
+    await expect(service.remove('missing', actor)).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.repairs.delete).not.toHaveBeenCalled();
   });
 });

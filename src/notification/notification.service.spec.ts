@@ -12,7 +12,14 @@ import { createMetricsMock, observabilityTestProviders } from '../observability/
 
 describe('NotificationService', () => {
   let service: NotificationService;
-  let prisma: { notifications: { create: jest.Mock; update: jest.Mock } };
+  let prisma: {
+    notifications: {
+      create: jest.Mock;
+      update: jest.Mock;
+      updateMany: jest.Mock;
+      count: jest.Mock;
+    };
+  };
   let redis: { getOrSet: jest.Mock; del: jest.Mock };
   let mqtt: { publishNotification: jest.Mock };
   let sse: { broadcast: jest.Mock };
@@ -30,6 +37,8 @@ describe('NotificationService', () => {
         update: jest
           .fn()
           .mockImplementation(({ data }) => Promise.resolve({ ...baseNotif, ...data })),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        count: jest.fn().mockResolvedValue(0),
       },
     };
     redis = {
@@ -127,9 +136,14 @@ describe('NotificationService', () => {
   it('fan-out ครบ MQTT + SSE + FCM แล้ว set delivered flags = true', async () => {
     const result = await service.create({ serial: 'SN-1', message: 'hi', detail: 'd' });
 
-    expect(mqtt.publishNotification).toHaveBeenCalledWith('SN-1', baseNotif);
+    expect(mqtt.publishNotification).toHaveBeenCalledWith('dev-1', baseNotif);
     // ward ติดไปด้วยเพื่อให้ SSE กรองให้ client ที่ถูก scope ตาม ward
-    expect(sse.broadcast).toHaveBeenCalledWith('notification', baseNotif, 'OPD');
+    // และแนบ unreadCount (ของ ward นี้) เข้าไปเป็น field เพิ่มเติมบน payload เดิม
+    expect(sse.broadcast).toHaveBeenCalledWith(
+      'notification',
+      { ...baseNotif, unreadCount: 0 },
+      'OPD',
+    );
     expect(fcm.pushToSerial).toHaveBeenCalled();
     expect(prisma.notifications.update).toHaveBeenCalledWith({
       where: { id: 'n1' },
@@ -179,5 +193,88 @@ describe('NotificationService', () => {
     await service.create({ serial: 'SN-1', message: 'hi' });
     expect(sse.broadcast).toHaveBeenCalled();
     expect(fcm.pushToSerial).toHaveBeenCalled();
+  });
+
+  it('กล่องที่ยังไม่ถูกติดตั้ง (deviceId เป็น null) → ข้าม MQTT publish แต่ SSE/FCM ยังทำงาน', async () => {
+    assignments.resolveDeviceId.mockResolvedValue(null);
+
+    await service.create({ serial: 'SN-1', message: 'hi' });
+
+    expect(mqtt.publishNotification).not.toHaveBeenCalled();
+    expect(sse.broadcast).toHaveBeenCalled();
+    expect(fcm.pushToSerial).toHaveBeenCalled();
+  });
+
+  describe('classification', () => {
+    it('message TEMP/OVER → category=TEMP, severity=critical persisted ตอน create', async () => {
+      await service.create({ serial: 'SN-1', message: 'PROBE/TEMP/OVER' });
+
+      expect(createArg()).toMatchObject({ category: 'TEMP', severity: 'critical' });
+    });
+
+    it('message AC/OFF → category=PLUG, severity=warning persisted ตอน create', async () => {
+      await service.create({ serial: 'SN-1', message: 'AC/OFF' });
+
+      expect(createArg()).toMatchObject({ category: 'PLUG', severity: 'warning' });
+    });
+  });
+
+  describe('read state', () => {
+    it('markRead: update isRead/readAt แล้ว broadcast action=read พร้อม unreadCount', async () => {
+      prisma.notifications.update.mockResolvedValue({ ...baseNotif, isRead: true });
+      prisma.notifications.count.mockResolvedValue(3);
+
+      const result = await service.markRead('n1');
+
+      expect(prisma.notifications.update).toHaveBeenCalledWith({
+        where: { id: 'n1' },
+        data: { isRead: true, readAt: expect.any(Date) },
+      });
+      expect(sse.broadcast).toHaveBeenCalledWith(
+        'notification',
+        { action: 'read', notificationId: 'n1', unreadCount: 3 },
+        'OPD',
+      );
+      expect(result.isRead).toBe(true);
+    });
+
+    it('markAllRead: updateMany ward-scoped แล้ว broadcast action=read-all', async () => {
+      prisma.notifications.updateMany.mockResolvedValue({ count: 5 });
+      prisma.notifications.count.mockResolvedValue(0);
+
+      const result = await service.markAllRead({
+        id: 'u1',
+        name: 'user',
+        role: 'USER',
+        wardId: 'OPD',
+      } as never);
+
+      expect(prisma.notifications.updateMany).toHaveBeenCalledWith({
+        where: { device: { ward: 'OPD' }, isRead: false },
+        data: { isRead: true, readAt: expect.any(Date) },
+      });
+      expect(sse.broadcast).toHaveBeenCalledWith(
+        'notification',
+        { action: 'read-all', unreadCount: 0 },
+        'OPD',
+      );
+      expect(result).toEqual({ count: 5 });
+    });
+
+    it('findUnreadCount: นับแบบ ward-scoped ตาม role ผู้ใช้', async () => {
+      prisma.notifications.count.mockResolvedValue(7);
+
+      const count = await service.findUnreadCount({
+        id: 'u1',
+        name: 'user',
+        role: 'USER',
+        wardId: 'OPD',
+      } as never);
+
+      expect(prisma.notifications.count).toHaveBeenCalledWith({
+        where: { device: { ward: 'OPD' }, isRead: false },
+      });
+      expect(count).toBe(7);
+    });
   });
 });

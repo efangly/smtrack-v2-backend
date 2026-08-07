@@ -78,9 +78,10 @@ export class MqttClientService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** publish การแจ้งเตือนไปยัง notification/{serial} */
-  async publishNotification(serial: string, payload: unknown): Promise<void> {
+  /** publish การแจ้งเตือนไปยัง notification/{deviceId} — deviceId คือจุดติดตั้ง ไม่ใช่ serial ของกล่อง */
+  async publishNotification(deviceId: string, payload: unknown): Promise<void> {
     const prefix = this.config.get<string>('mqtt.notificationTopicPrefix');
-    await this.publish(`${prefix}/${serial}`, payload, { qos: 1 });
+    await this.publish(`${prefix}/${deviceId}`, payload, { qos: 1 });
   }
 
   /** publish command ไปยังอุปกรณ์ devices/{serial}/command */
