@@ -95,12 +95,6 @@ export class SseService {
     this.broadcast('telemetry', payload, ward);
   }
 
-  @OnEvent(AppEvents.NOTIFICATION_CREATED)
-  async handleNotificationCreated(payload: unknown): Promise<void> {
-    const ward = await this.wardOf((payload as { serial?: unknown })?.serial);
-    this.broadcast('notification', payload, ward);
-  }
-
   @OnEvent(AppEvents.DEVICE_CHANGED)
   handleDeviceChanged(payload: DeviceChangedEvent): void {
     // event นี้พก device ทั้งก้อนมาอยู่แล้ว ไม่ต้อง resolve ward ซ้ำ

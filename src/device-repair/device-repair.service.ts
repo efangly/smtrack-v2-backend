@@ -70,4 +70,11 @@ export class DeviceRepairService {
     this.emitChanged('updated', repair, actor);
     return repair;
   }
+
+  async remove(id: string, actor?: DeviceChangeActor): Promise<Repairs> {
+    await this.findOne(id);
+    const repair = await this.prisma.repairs.delete({ where: { id } });
+    this.emitChanged('deleted', repair, actor);
+    return repair;
+  }
 }

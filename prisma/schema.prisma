@@ -269,6 +269,15 @@ model Notifications {
   status       Boolean  @default(false) @map("status")
   deliveredSse Boolean  @default(false) @map("delivered_sse") // ส่งผ่าน SSE สำเร็จหรือยัง
   deliveredFcm Boolean  @default(false) @map("delivered_fcm") // ส่งผ่าน FCM สำเร็จหรือยัง
+  /// ผู้ใช้ (ฝั่ง dashboard) อ่าน/รับทราบการแจ้งเตือนนี้แล้วหรือยัง — คนละความหมายกับ deliveredSse/Fcm
+  /// ที่บอกแค่ว่าส่งออกไปสำเร็จหรือไม่ ไม่ได้บอกว่ามีคนเห็นแล้ว
+  isRead       Boolean  @default(false) @map("is_read")
+  readAt       DateTime? @map("read_at")
+  /// หมวดแจ้งเตือน แยกจาก message string เพื่อ query/filter ได้โดยไม่ต้อง parse ซ้ำทุกครั้ง
+  /// คำนวณตอน create() ด้วย notification-classifier.util.ts (TEMP|DOOR|INTERNET|PLUG|SDCARD|REPORT|OTHER)
+  category     String   @default("OTHER") @map("category")
+  /// ระดับความสำคัญ คำนวณจาก classifier เดียวกัน (critical|warning|info)
+  severity     String   @default("info") @map("severity")
   deviceId     String?  @map("device_id")
   /// probe ที่เป็นต้นเหตุของการแจ้งเตือน — 1 device มีหลาย probe การแจ้งเตือนอุณหภูมิเกินช่วง
   /// จึงต้องบอกได้ว่า probe ไหน nullable ด้วยเหตุผลเดียวกับ LogDays.probeId
@@ -284,6 +293,7 @@ model Notifications {
   @@index([serial, createAt])
   @@index([deviceId, createAt])
   @@index([probeId, createAt])
+  @@index([deviceId, isRead])
   @@map("notifications")
 }
 

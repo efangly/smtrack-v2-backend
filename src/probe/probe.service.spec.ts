@@ -16,6 +16,9 @@ describe('ProbeService', () => {
       update: jest.Mock;
       delete: jest.Mock;
     };
+    logDays: {
+      findMany: jest.Mock;
+    };
   };
   let events: { emit: jest.Mock };
 
@@ -31,6 +34,9 @@ describe('ProbeService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
         delete: jest.fn(),
+      },
+      logDays: {
+        findMany: jest.fn(),
       },
     };
     events = { emit: jest.fn() };
@@ -116,6 +122,77 @@ describe('ProbeService', () => {
     expect(prisma.probes.count).toHaveBeenCalledWith({ where: { deviceId: 'dev-1' } });
     expect(result.data).toEqual([probe]);
     expect(result.meta).toEqual({ page: 1, limit: 20, total: 1, totalPages: 1 });
+  });
+
+  describe('findLatestTelemetryByDevice', () => {
+    it('ไม่มี probe เลย → คืน [] โดยไม่ยิง query logDays', async () => {
+      prisma.probes.findMany.mockResolvedValue([]);
+
+      const result = await service.findLatestTelemetryByDevice('dev-1');
+
+      expect(result).toEqual([]);
+      expect(prisma.logDays.findMany).not.toHaveBeenCalled();
+    });
+
+    it('มี 2 probes มี log ของ probe เดียว → probe ที่ไม่มี log ได้ค่า null ทั้งหมด', async () => {
+      prisma.probes.findMany.mockResolvedValue([
+        { id: 'probe-1', channel: '1', name: 'P1', type: 'SHT-31', doorQty: 1 },
+        { id: 'probe-2', channel: '2', name: 'P2', type: 'PT100', doorQty: 2 },
+      ]);
+      prisma.logDays.findMany.mockResolvedValue([
+        {
+          probeId: 'probe-1',
+          temp: 4.5,
+          tempDisplay: 4.5,
+          humidity: 60,
+          humidityDisplay: 60,
+          door1: false,
+          door2: false,
+          door3: false,
+          sendTime: new Date('2026-01-01T00:00:00Z'),
+        },
+      ]);
+
+      const result = await service.findLatestTelemetryByDevice('dev-1');
+
+      expect(prisma.logDays.findMany).toHaveBeenCalledWith({
+        where: { probeId: { in: ['probe-1', 'probe-2'] } },
+        orderBy: [{ probeId: 'asc' }, { sendTime: 'desc' }],
+        distinct: ['probeId'],
+      });
+      expect(result).toEqual([
+        {
+          id: 'probe-1',
+          channel: '1',
+          name: 'P1',
+          type: 'SHT-31',
+          doorQty: 1,
+          temp: 4.5,
+          tempDisplay: 4.5,
+          humidity: 60,
+          humidityDisplay: 60,
+          door1: false,
+          door2: false,
+          door3: false,
+          sendTime: new Date('2026-01-01T00:00:00Z'),
+        },
+        {
+          id: 'probe-2',
+          channel: '2',
+          name: 'P2',
+          type: 'PT100',
+          doorQty: 2,
+          temp: null,
+          tempDisplay: null,
+          humidity: null,
+          humidityDisplay: null,
+          door1: null,
+          door2: null,
+          door3: null,
+          sendTime: null,
+        },
+      ]);
+    });
   });
 
   it('findOne โยน NotFoundException ถ้าไม่พบ probe', async () => {

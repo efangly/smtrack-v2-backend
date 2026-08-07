@@ -10,7 +10,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { QueryWarrantyDto } from './dto/query-warranty.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 
 // หมายเหตุ: ข้อมูลประกัน (ชื่อ/ที่อยู่ลูกค้า) เป็นข้อมูลแอดมินภายใน ไม่ใช่ dashboard สาธารณะ
@@ -32,8 +32,8 @@ export class WarrantiesController {
   }
 
   @Get()
-  findAll(@Query() pagination: PaginationQueryDto): Promise<Paginated<Warranties>> {
-    return this.warrantiesService.findAll(pagination);
+  findAll(@Query() query: QueryWarrantyDto): Promise<Paginated<Warranties>> {
+    return this.warrantiesService.findAll(query);
   }
 
   @Get('by-serial/:serial')

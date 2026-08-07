@@ -13,7 +13,7 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Probes } from '../generated/prisma/client';
-import { ProbeService } from './probe.service';
+import { ProbeService, ProbeTelemetrySnapshot } from './probe.service';
 import { CreateProbeDto } from './dto/create-probe.dto';
 import { UpdateProbeDto } from './dto/update-probe.dto';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
@@ -50,6 +50,13 @@ export class ProbeController {
     @Query() pagination: PaginationQueryDto,
   ): Promise<Paginated<Probes>> {
     return this.probeService.findAllByDevice(deviceId, pagination);
+  }
+
+  @Get('devices/:deviceId/probes/telemetry')
+  findLatestTelemetryByDevice(
+    @Param('deviceId') deviceId: string,
+  ): Promise<ProbeTelemetrySnapshot[]> {
+    return this.probeService.findLatestTelemetryByDevice(deviceId);
   }
 
   @Get('probes/:id')

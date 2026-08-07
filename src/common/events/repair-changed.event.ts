@@ -1,7 +1,7 @@
 import { Repairs } from '../../generated/prisma/client';
 import { DeviceChangeActor } from './device-changed.event';
 
-export type RepairChangeAction = 'created' | 'updated';
+export type RepairChangeAction = 'created' | 'updated' | 'deleted';
 
 /** payload ของ event `repair.changed` — ส่ง repair ทั้งก้อนไปด้วยเสมอ เหมือน device.changed */
 export interface RepairChangedEvent {

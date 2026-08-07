@@ -11,6 +11,22 @@ import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
+export interface ProbeTelemetrySnapshot {
+  id: string;
+  channel: string;
+  name: string | null;
+  type: string | null;
+  doorQty: number;
+  temp: number | null;
+  tempDisplay: number | null;
+  humidity: number | null;
+  humidityDisplay: number | null;
+  door1: boolean | null;
+  door2: boolean | null;
+  door3: boolean | null;
+  sendTime: Date | null;
+}
+
 @Injectable()
 export class ProbeService {
   private readonly logger = new Logger(ProbeService.name);
@@ -69,6 +85,47 @@ export class ProbeService {
       this.prisma.probes.count({ where: { deviceId } }),
     ]);
     return toPaginated(data, total, pagination);
+  }
+
+  /**
+   * ค่า telemetry ล่าสุด "ต่อ probe" ของ device — ต่างจาก findAllByDevice ที่คืนแค่ config
+   * (doorQty/channel/...) ใช้สำหรับ device list ที่ต้องแยกอุณหภูมิ/ความชื้น/ประตูรายตัวเมื่อ
+   * device มีมากกว่า 1 probe (LogDays.door1/2/3 เป็นค่าต่อแถว/ต่อ probeId อยู่แล้ว)
+   */
+  async findLatestTelemetryByDevice(deviceId: string): Promise<ProbeTelemetrySnapshot[]> {
+    const probes = await this.prisma.probes.findMany({
+      where: { deviceId },
+      orderBy: { channel: 'asc' },
+    });
+    if (probes.length === 0) return [];
+
+    // "แถวล่าสุดต่อ probeId" ในคิวรีเดียวด้วย distinct — ต้อง orderBy field ที่ distinct
+    // ก่อน sendTime desc (Prisma greatest-n-per-group pattern)
+    const latestLogs = await this.prisma.logDays.findMany({
+      where: { probeId: { in: probes.map((p) => p.id) } },
+      orderBy: [{ probeId: 'asc' }, { sendTime: 'desc' }],
+      distinct: ['probeId'],
+    });
+    const byProbeId = new Map(latestLogs.map((log) => [log.probeId as string, log]));
+
+    return probes.map((probe) => {
+      const log = byProbeId.get(probe.id);
+      return {
+        id: probe.id,
+        channel: probe.channel,
+        name: probe.name,
+        type: probe.type,
+        doorQty: probe.doorQty,
+        temp: log?.temp ?? null,
+        tempDisplay: log?.tempDisplay ?? null,
+        humidity: log?.humidity ?? null,
+        humidityDisplay: log?.humidityDisplay ?? null,
+        door1: log?.door1 ?? null,
+        door2: log?.door2 ?? null,
+        door3: log?.door3 ?? null,
+        sendTime: log?.sendTime ?? null,
+      };
+    });
   }
 
   async findOne(id: string): Promise<Probes> {

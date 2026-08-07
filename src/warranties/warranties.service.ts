@@ -10,7 +10,7 @@ import { DeviceChangeActor } from '../common/events/device-changed.event';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateWarrantyDto } from './dto/create-warranty.dto';
 import { UpdateWarrantyDto } from './dto/update-warranty.dto';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { QueryWarrantyDto } from './dto/query-warranty.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
@@ -44,16 +44,38 @@ export class WarrantiesService {
     return warranty;
   }
 
-  async findAll(pagination: PaginationQueryDto): Promise<Paginated<Warranties>> {
+  async findAll(query: QueryWarrantyDto): Promise<Paginated<Warranties>> {
+    const searchCondition = query.search
+      ? {
+          OR: [
+            { devName: { contains: query.search, mode: 'insensitive' as const } },
+            { customerName: { contains: query.search, mode: 'insensitive' as const } },
+            { product: { contains: query.search, mode: 'insensitive' as const } },
+            { model: { contains: query.search, mode: 'insensitive' as const } },
+          ],
+        }
+      : undefined;
+    const expiringSoonCondition = query.expiringSoon
+      ? {
+          status: true,
+          expire: { gte: new Date(), lte: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+        }
+      : undefined;
+    const where =
+      searchCondition || expiringSoonCondition
+        ? { ...searchCondition, ...expiringSoonCondition }
+        : undefined;
+
     const [data, total] = await Promise.all([
       this.prisma.warranties.findMany({
+        where,
         orderBy: { createAt: 'desc' },
-        skip: paginationSkip(pagination),
-        take: pagination.limit ?? 20,
+        skip: paginationSkip(query),
+        take: query.limit ?? 20,
       }),
-      this.prisma.warranties.count(),
+      this.prisma.warranties.count({ where }),
     ]);
-    return toPaginated(data, total, pagination);
+    return toPaginated(data, total, query);
   }
 
   findBySerial(serial: string): Promise<Warranties[]> {

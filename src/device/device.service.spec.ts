@@ -208,4 +208,42 @@ describe('DeviceService — findAll pagination', () => {
     expect(result.meta.total).toBe(3);
     expect(result.meta.totalPages).toBe(1);
   });
+
+  it('มี search → OR-match staticName/serial/name แบบ contains/insensitive', async () => {
+    prisma.devices.findMany.mockResolvedValue([]);
+    prisma.devices.count.mockResolvedValue(1);
+
+    await service.findAll({ page: 1, limit: 20, search: 'icu-1' } as never);
+
+    const expectedWhere = {
+      where: {
+        OR: [
+          { staticName: { contains: 'icu-1', mode: 'insensitive' } },
+          { serial: { contains: 'icu-1', mode: 'insensitive' } },
+          { name: { contains: 'icu-1', mode: 'insensitive' } },
+        ],
+      },
+    };
+    expect(prisma.devices.findMany).toHaveBeenCalledWith(expect.objectContaining(expectedWhere));
+    expect(prisma.devices.count).toHaveBeenCalledWith(expectedWhere);
+  });
+
+  it('มีทั้ง ward และ search → รวมเป็น AND ของทั้งสองเงื่อนไข', async () => {
+    prisma.devices.findMany.mockResolvedValue([]);
+    prisma.devices.count.mockResolvedValue(1);
+
+    await service.findAll({ page: 1, limit: 20, ward: ['ICU'], search: 'box' } as never);
+
+    const expectedWhere = {
+      where: {
+        ward: { in: ['ICU'] },
+        OR: [
+          { staticName: { contains: 'box', mode: 'insensitive' } },
+          { serial: { contains: 'box', mode: 'insensitive' } },
+          { name: { contains: 'box', mode: 'insensitive' } },
+        ],
+      },
+    };
+    expect(prisma.devices.count).toHaveBeenCalledWith(expectedWhere);
+  });
 });

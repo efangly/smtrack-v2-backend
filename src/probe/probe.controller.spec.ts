@@ -7,6 +7,7 @@ describe('ProbeController', () => {
   let probeService: {
     create: jest.Mock;
     findAllByDevice: jest.Mock;
+    findLatestTelemetryByDevice: jest.Mock;
     findOne: jest.Mock;
     update: jest.Mock;
     remove: jest.Mock;
@@ -19,6 +20,7 @@ describe('ProbeController', () => {
     probeService = {
       create: jest.fn(),
       findAllByDevice: jest.fn(),
+      findLatestTelemetryByDevice: jest.fn(),
       findOne: jest.fn(),
       update: jest.fn(),
       remove: jest.fn(),
@@ -47,6 +49,14 @@ describe('ProbeController', () => {
     await controller.findAllByDevice('dev-1', pagination);
 
     expect(probeService.findAllByDevice).toHaveBeenCalledWith('dev-1', pagination);
+  });
+
+  it('findLatestTelemetryByDevice เรียก service ด้วย deviceId', async () => {
+    probeService.findLatestTelemetryByDevice.mockResolvedValue([]);
+
+    await controller.findLatestTelemetryByDevice('dev-1');
+
+    expect(probeService.findLatestTelemetryByDevice).toHaveBeenCalledWith('dev-1');
   });
 
   it('update ส่ง id, dto และ actor ให้ service', async () => {

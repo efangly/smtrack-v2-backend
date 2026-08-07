@@ -23,7 +23,7 @@ import { paginationSkip, toPaginated } from '../common/pagination/paginate.util'
 
 const ALL_KEY_PREFIX = 'device:all';
 const allKey = (pagination: QueryDeviceDto) =>
-  `${ALL_KEY_PREFIX}:${pagination.page ?? 1}:${pagination.limit ?? 20}:${(pagination.ward ?? []).slice().sort().join(',')}`;
+  `${ALL_KEY_PREFIX}:${pagination.page ?? 1}:${pagination.limit ?? 20}:${(pagination.ward ?? []).slice().sort().join(',')}:${pagination.search ?? ''}`;
 const oneKey = (serial: string) => `device:${serial}`;
 
 /** include กล่องที่ติดตั้งอยู่ปัจจุบันเสมอ เพื่อให้ client ยังเห็น firmware/token เหมือนก่อนแยกตาราง */
@@ -149,7 +149,18 @@ export class DeviceService {
     // เก็บ cache เป็น {data, total} ธรรมดา ไม่ใช่ instance ของ Paginated เพราะ getOrSet
     // เขียน/อ่านผ่าน JSON.stringify/parse ทำให้ instanceof เช็คไม่ผ่านตอน cache hit
     const { data, total } = await this.redis.getOrSet(allKey(pagination), 300, async () => {
-      const where = pagination.ward?.length ? { ward: { in: pagination.ward } } : undefined;
+      const wardCondition = pagination.ward?.length ? { ward: { in: pagination.ward } } : undefined;
+      const searchCondition = pagination.search
+        ? {
+            OR: [
+              { staticName: { contains: pagination.search, mode: 'insensitive' as const } },
+              { serial: { contains: pagination.search, mode: 'insensitive' as const } },
+              { name: { contains: pagination.search, mode: 'insensitive' as const } },
+            ],
+          }
+        : undefined;
+      const where =
+        wardCondition || searchCondition ? { ...wardCondition, ...searchCondition } : undefined;
       const [data, total] = await Promise.all([
         this.prisma.devices.findMany({
           where,

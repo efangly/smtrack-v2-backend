@@ -15,6 +15,7 @@ import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { NotificationQueryDto } from './dto/query-notification.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
+import { classifyNotification } from './notification-classifier.util';
 
 const bySerialKey = (serial: string) => `notification:${serial}`;
 
@@ -58,6 +59,7 @@ export class NotificationService {
     const probeId =
       deviceId && channel ? await this.probes.resolveProbeId(deviceId, channel) : null;
 
+    const { category, severity } = classifyNotification(dto.message);
     const notification = await this.prisma.notifications.create({
       data: {
         serial: dto.serial,
@@ -66,15 +68,24 @@ export class NotificationService {
         probe: channel,
         message: dto.message,
         detail: dto.detail ?? '',
+        category,
+        severity,
       },
     });
     await this.redis.del(bySerialKey(dto.serial));
 
-    // publish ผ่าน MQTT topic notification/{serial} (log/notify เดินผ่าน MQTT เท่านั้น)
-    try {
-      await this.mqttClient.publishNotification(dto.serial, notification);
-    } catch (err) {
-      this.logger.error(`MQTT publish notification failed: ${this.msg(err)}`);
+    // publish ผ่าน MQTT topic notification/{deviceId} (log/notify เดินผ่าน MQTT เท่านั้น)
+    // deviceId เป็น null ได้ถ้ากล่องยังไม่ถูกติดตั้งที่ไหน — ไม่มี deviceId ก็ build topic ไม่ได้ ข้ามไป
+    if (deviceId) {
+      try {
+        await this.mqttClient.publishNotification(deviceId, notification);
+      } catch (err) {
+        this.logger.error(`MQTT publish notification failed: ${this.msg(err)}`);
+      }
+    } else {
+      this.logger.warn(
+        `ข้าม MQTT publish notification: serial ${dto.serial} ยังไม่ถูกติดตั้งที่จุดใด (deviceId เป็น null)`,
+      );
     }
 
     const [deliveredSse, deliveredFcm] = await this.traceService.withSpan(
@@ -107,7 +118,11 @@ export class NotificationService {
         try {
           // ส่ง ward ไปด้วยเพื่อให้ SseService กรองให้ client ที่ถูก scope ตาม ward ได้
           const ward = await this.assignments.resolveWard(notification.serial);
-          this.sseService.broadcast('notification', notification, ward);
+          // แนบ unreadCount (ของ ward นี้) ไปด้วย เป็น field เพิ่มเติมบน payload เดิม
+          // (ไม่ทำลาย consumer เดิมที่อ่านแค่ field ของ Notifications ตรง ๆ) เพื่อให้ dashboard
+          // อัปเดตตัวเลขแจ้งเตือนใหม่แบบ real-time โดยไม่ต้องยิง fetch แยก
+          const unreadCount = await this.countUnread(ward);
+          this.sseService.broadcast('notification', { ...notification, unreadCount }, ward);
           this.metrics.recordNotificationDelivery('sse', 'success');
           return true;
         } catch (err) {
@@ -172,6 +187,19 @@ export class NotificationService {
     const skip = paginationSkip(query);
 
     let where = conditions;
+    if (query.category || query.severity) {
+      // filter แบบ structured ผ่านคอลัมน์ที่ index ไว้ (deviceId,isRead) เร็วกว่า message.contains
+      where = {
+        ...where,
+        ...(query.category ? { category: query.category.toUpperCase() } : {}),
+        ...(query.severity ? { severity: query.severity.toLowerCase() } : {}),
+      };
+      const [data, total] = await Promise.all([
+        this.prisma.notifications.findMany({ take, skip, where, orderBy: { createAt: 'desc' } }),
+        this.prisma.notifications.count({ where }),
+      ]);
+      return toPaginated(data, total, query);
+    }
     if (query.filter) {
       const contains = this.filterToMessageContains(query.filter);
       where = { ...where, message: { contains } };
@@ -207,27 +235,79 @@ export class NotificationService {
       plug: 0,
       sdcard: 0,
     };
+    // group ด้วย classifier ตัวเดียวกับที่ persist ตอน create() — แหล่งความจริงเดียว
+    // (เดิม parse message แยกกันคนละจุด ทำให้ logic ดริฟท์ได้)
     for (const n of notification) {
-      const msgType = n.message.split('/');
-      switch (msgType[0]) {
-        case 'SD':
-          if (msgType[1] === 'OFF') counts.sdcard++;
+      const { category } = classifyNotification(n.message);
+      switch (category) {
+        case 'SDCARD':
+          counts.sdcard++;
           break;
-        case 'AC':
-          if (msgType[1] === 'OFF') counts.plug++;
+        case 'PLUG':
+          counts.plug++;
           break;
         case 'INTERNET':
-          if (msgType[1] === 'OFF') counts.internet++;
+          counts.internet++;
+          break;
+        case 'TEMP':
+          counts.temp++;
+          break;
+        case 'DOOR':
+          counts.door++;
           break;
         default:
-          if (msgType[1] === 'TEMP') {
-            if (msgType[2] === 'OVER' || msgType[2] === 'LOWER') counts.temp++;
-          } else if (msgType[2] === 'ON') {
-            counts.door++;
-          }
+          break;
       }
     }
     return counts;
+  }
+
+  /** unread count แบบ persistent (ต่างจาก findCount ที่นับตาม type/message) — ward-scoped เหมือนกัน */
+  findUnreadCount(user: JwtPayloadDto): Promise<number> {
+    const { conditions } = this.findCondition(user);
+    return this.prisma.notifications.count({ where: { ...conditions, isRead: false } });
+  }
+
+  /** นับ unread ของ ward เดียว ใช้ตอน broadcast unreadCount สด ๆ ผ่าน SSE (ward=null = นับรวมทุก ward) */
+  private countUnread(ward: string | null): Promise<number> {
+    return this.prisma.notifications.count({
+      where: ward ? { isRead: false, device: { ward } } : { isRead: false },
+    });
+  }
+
+  async markRead(id: string): Promise<Notifications> {
+    const notification = await this.prisma.notifications.update({
+      where: { id },
+      data: { isRead: true, readAt: new Date() },
+    });
+    try {
+      const ward = await this.assignments.resolveWard(notification.serial);
+      const unreadCount = await this.countUnread(ward);
+      this.sseService.broadcast(
+        'notification',
+        { action: 'read', notificationId: id, unreadCount },
+        ward,
+      );
+    } catch (err) {
+      this.logger.warn(`broadcast notification.read ล้มเหลว: ${this.msg(err)}`);
+    }
+    return notification;
+  }
+
+  async markAllRead(user: JwtPayloadDto): Promise<{ count: number }> {
+    const { conditions } = this.findCondition(user);
+    const result = await this.prisma.notifications.updateMany({
+      where: { ...conditions, isRead: false },
+      data: { isRead: true, readAt: new Date() },
+    });
+    try {
+      const ward = user.wardId ?? null;
+      const unreadCount = await this.findUnreadCount(user);
+      this.sseService.broadcast('notification', { action: 'read-all', unreadCount }, ward);
+    } catch (err) {
+      this.logger.warn(`broadcast notification.read-all ล้มเหลว: ${this.msg(err)}`);
+    }
+    return { count: result.count };
   }
 
   update(id: string, dto: UpdateNotificationDto): Promise<Notifications> {

@@ -12,4 +12,14 @@ export class QueryDeviceDto extends PaginationQueryDto {
   @IsString({ each: true })
   @IsOptional()
   ward?: string[];
+
+  /** ค้นหาแบบ contains/insensitive จาก staticName, serial, name */
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    const trimmed = String(value).trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  })
+  @IsString()
+  @IsOptional()
+  search?: string;
 }
