@@ -11,6 +11,7 @@ import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
+import { resolveRange } from '../common/time/range.util';
 
 @Injectable()
 export class TelemetryService {
@@ -88,7 +89,10 @@ export class TelemetryService {
     if (query.deviceId) where.deviceId = query.deviceId;
     if (query.probeId) where.probeId = query.probeId;
     if (query.probe) where.probe = query.probe;
-    if (query.from || query.to) {
+    if (query.range) {
+      const { from, to } = resolveRange(query.range, query.from, query.to);
+      where.sendTime = { gte: from, lte: to };
+    } else if (query.from || query.to) {
       where.sendTime = {};
       if (query.from) where.sendTime.gte = new Date(query.from);
       if (query.to) where.sendTime.lte = new Date(query.to);

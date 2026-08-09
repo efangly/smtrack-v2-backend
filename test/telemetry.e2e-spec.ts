@@ -92,6 +92,50 @@ describe('Telemetry (e2e)', () => {
     );
   });
 
+  it('range=1d กรองเป็นช่วง 1 วันย้อนหลังจากปัจจุบัน', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`${API_PREFIX}/telemetry`)
+      .query({ serial, range: '1d' });
+
+    expect(res.status).toBe(200);
+    const logs = unwrap(res.body);
+    // buildLogs สร้างทีละชั่วโมงย้อนหลัง 6 แถว (0-5 ชม.) ทั้งหมดอยู่ใน 1 วัน
+    expect(logs).toHaveLength(6);
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    expect(
+      logs.every((r: { sendTime: string }) => new Date(r.sendTime).getTime() >= oneDayAgo),
+    ).toBe(true);
+  });
+
+  it('range=custom ต้องส่ง from/to มาด้วย ไม่งั้นปฏิเสธ', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`${API_PREFIX}/telemetry`)
+      .query({ serial, range: 'custom' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('range=custom ใช้ from/to ที่ส่งมาตรง ๆ', async () => {
+    const from = new Date(Date.now() - 3.5 * 60 * 60 * 1000).toISOString();
+    const to = new Date().toISOString();
+
+    const res = await request(app.getHttpServer())
+      .get(`${API_PREFIX}/telemetry`)
+      .query({ serial, range: 'custom', from, to });
+
+    expect(res.status).toBe(200);
+    // เหมือน test from/to เดิม — ตัดที่ 3.5 ชม. เหลือ 4 แถว (0,1,2,3 ชม.)
+    expect(unwrap(res.body)).toHaveLength(4);
+  });
+
+  it('ปฏิเสธ range ที่ไม่ใช่ค่าใน enum', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`${API_PREFIX}/telemetry`)
+      .query({ serial, range: 'invalid' });
+
+    expect(res.status).toBe(400);
+  });
+
   it('ไม่ระบุ serial คืนข้อมูลรวมทุกเครื่อง', async () => {
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)

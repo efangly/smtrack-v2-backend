@@ -1,6 +1,16 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import {
+  IsDateString,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  Min,
+} from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
+import { TimeRange } from '../../common/time/range.util';
 
 export class QueryTelemetryDto extends PaginationQueryDto {
   /** กรองด้วยกล่องฮาร์ดแวร์ — ได้เฉพาะ log ที่กล่องนั้นยิงมา ไม่ว่าตอนนั้นติดตั้งอยู่ที่ไหน */
@@ -25,6 +35,11 @@ export class QueryTelemetryDto extends PaginationQueryDto {
   @IsString()
   @IsOptional()
   probe?: string;
+
+  /** ช่วงเวลาย้อนหลังสำเร็จรูป — ไม่ส่งมา = ใช้ from/to ตรง ๆ แบบเดิม (backward compat) */
+  @IsEnum(TimeRange)
+  @IsOptional()
+  range?: TimeRange;
 
   @IsDateString()
   @IsOptional()
