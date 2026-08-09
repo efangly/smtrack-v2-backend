@@ -1,3 +1,6 @@
+// ต้องมาก่อน import อื่นทั้งหมด เพื่อให้ .env ถูกโหลดเข้า process.env ก่อน tracing.ts อ่าน OTEL_EXPORTER_OTLP_ENDPOINT
+// (ConfigModule.forRoot() ทำงานช้าเกินไป — ตอนนั้น NestFactory.create ยังไม่ถูกเรียก)
+import 'dotenv/config';
 // ต้องมาก่อน import อื่นทั้งหมด เพื่อให้ OTel patch library ได้ทัน (import 'reflect-metadata' ต่อให้ข้างใน)
 import './observability/tracing';
 import { NestFactory, Reflector } from '@nestjs/core';

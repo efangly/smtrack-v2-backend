@@ -1,0 +1,126 @@
+groups:
+  - name: smtrack-availability
+    rules:
+      - alert: SmtrackOtelCollectorDown
+        expr: up{job="otel-collector"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "otel-collector ไม่ตอบสนอง"
+          description: "Prometheus scrape otel-collector:8888 ไม่ได้เกิน 2 นาที — trace/metric จากแอปจะไม่เข้าระบบทั้งหมด"
+
+      - alert: SmtrackAppMetricsStopped
+        expr: absent_over_time(http_server_duration_milliseconds_count{job="smtrack-backend"}[10m])
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "แอปไม่ส่ง HTTP metric เข้ามาเกิน 10 นาที"
+          description: "อาจเป็นเพราะแอป crash, OTel SDK ไม่ start (ดูบั๊ก tracing.ts เดิม), หรือ otel-collector รับ metric ไม่ได้ — ต้องเช็ค container logs ประกอบ เพราะ query นี้ inference จาก \"ไม่มี HTTP request เข้าเลย\" ไม่ใช่ health check ตรง ๆ"
+
+  - name: smtrack-http
+    rules:
+      - alert: SmtrackHttpErrorRateHigh
+        expr: |
+          sum(rate(http_server_duration_milliseconds_count{job="smtrack-backend", http_status_code=~"5.."}[5m]))
+          /
+          sum(rate(http_server_duration_milliseconds_count{job="smtrack-backend"}[5m])) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "HTTP 5xx error rate เกิน 5% ใน 5 นาทีล่าสุด"
+          description: "{{ $value | humanizePercentage }} ของ request ทั้งหมดเป็น 5xx"
+
+      - alert: SmtrackHttpLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_server_duration_milliseconds_bucket{job="smtrack-backend"}[5m])) by (le, http_route)
+          ) > 2000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "HTTP p95 latency เกิน 2 วินาที ที่ route {{ $labels.http_route }}"
+
+  - name: smtrack-database
+    rules:
+      - alert: SmtrackDbLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(db_client_operation_duration_seconds_bucket{job="smtrack-backend"}[5m])) by (le, db_operation_name)
+          ) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "DB query p95 latency เกิน 1 วินาที ({{ $labels.db_operation_name }})"
+
+  - name: smtrack-ingest
+    rules:
+      - alert: SmtrackMqttIngestErrorsHigh
+        expr: |
+          sum(rate(smtrack_mqtt_messages_total{status="error"}[5m]))
+          /
+          sum(rate(smtrack_mqtt_messages_total[5m])) > 0.1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "MQTT message ingest error rate เกิน 10%"
+          description: "อุปกรณ์ IoT อาจส่ง payload ผิด schema จำนวนมาก หรือ MQTT broker/DB มีปัญหา"
+
+      - alert: SmtrackRabbitmqIngestErrorsHigh
+        expr: |
+          sum(rate(smtrack_rmq_messages_total{status="error"}[5m])) by (queue)
+          /
+          sum(rate(smtrack_rmq_messages_total[5m])) by (queue) > 0.1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "RabbitMQ consumer error rate เกิน 10% ที่ queue {{ $labels.queue }}"
+
+      - alert: SmtrackMqttIngestStalled
+        expr: absent_over_time(smtrack_mqtt_messages_total[15m])
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "ไม่มี MQTT message เข้ามาเลยเกิน 15 นาที"
+          description: "อุปกรณ์ IoT อาจหยุดส่งข้อมูลทั้งหมด หรือ MQTT client ในแอปหลุดการเชื่อมต่อ — เช็ค MqttClientService logs ประกอบ"
+
+  - name: smtrack-notification
+    rules:
+      - alert: SmtrackNotificationDeliveryFailuresHigh
+        expr: |
+          sum(rate(smtrack_notification_delivery_total{status="failed"}[15m])) by (channel)
+          /
+          sum(rate(smtrack_notification_delivery_total[15m])) by (channel) > 0.2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Notification delivery failure rate เกิน 20% ที่ channel {{ $labels.channel }}"
+          description: "ถ้า channel=fcm อาจเป็นปัญหา Firebase credential/quota, ถ้า channel=sse อาจเป็นปัญหา client disconnect ผิดปกติ"
+
+  - name: smtrack-runtime
+    rules:
+      - alert: SmtrackEventLoopLagHigh
+        expr: nodejs_eventloop_delay_p99_seconds{job="smtrack-backend"} > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Node.js event loop p99 delay เกิน 500ms"
+          description: "อาจมี synchronous/blocking operation ทำงานหนักเกินไปในโปรเซสเดียว"
+
+      - alert: SmtrackHeapMemoryHigh
+        expr: sum(v8js_memory_heap_used_bytes{job="smtrack-backend"}) by (v8js_heap_space_name) > 1.5e9
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "V8 heap usage เกิน 1.5GB ต่อเนื่อง 15 นาที ({{ $labels.v8js_heap_space_name }})"
+
+  - name: smtrack-sse
+    rules:
+      - alert: SmtrackSseConnectionsDroppedToZero
+        expr: |
+          sum(smtrack_sse_active_connections) == 0
+          and
+          sum(smtrack_sse_active_connections offset 15m) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "SSE active connections ตกลงเหลือ 0 จากที่เคยมี client เชื่อมต่ออยู่"

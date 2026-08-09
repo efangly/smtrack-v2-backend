@@ -1,0 +1,32 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: telegram-default
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h
+  routes:
+    # critical แยกไปกลุ่มเดียวกันแต่ repeat ถี่กว่า จะได้ไม่พลาด
+    - match:
+        severity: critical
+      repeat_interval: 30m
+
+receivers:
+  - name: telegram-default
+    telegram_configs:
+      - bot_token: '${TELEGRAM_BOT_TOKEN}'
+        chat_id: ${TELEGRAM_CHAT_ID}
+        parse_mode: 'HTML'
+        message: |
+          <b>{{ .CommonLabels.alertname }}</b> [{{ .CommonLabels.severity }}]
+          {{ range .Alerts }}{{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          {{ end }}
+
+inhibit_rules:
+  # ถ้า app ตายทั้งตัวอยู่แล้ว (ไม่ส่ง metric เข้ามาเลย) ไม่ต้องยิง alert ย่อยซ้ำ (error rate, latency ฯลฯ)
+  - source_matchers: ['alertname = SmtrackAppMetricsStopped']
+    target_matchers: ['severity =~ warning|critical']
+    equal: ['job']

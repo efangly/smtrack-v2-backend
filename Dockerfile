@@ -29,18 +29,20 @@ FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+RUN apk add --no-cache curl \
+  && addgroup -S nodejs && adduser -S nestjs -G nodejs \
+  && chown nestjs:nodejs /app
+
+USER nestjs
+
 # prod deps เท่านั้น — Prisma 7 เป็น Rust-free ไม่ต้องมี engine binary ติดมาด้วย
-COPY package.json package-lock.json ./
+# รันเป็น user nestjs ตั้งแต่ npm ci เพื่อให้ node_modules เป็นเจ้าของถูกต้องทันที
+# (ไม่ต้อง chown -R ทีหลัง ซึ่งจะทำให้ overlayfs copy-up ทั้ง node_modules เป็นเลเยอร์ซ้ำ)
+COPY --chown=nestjs:nodejs package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # nest build คอมไพล์ src/generated/prisma ไปเป็น dist/generated/prisma ให้แล้ว
-COPY --from=builder /app/dist ./dist
-
-RUN apk add --no-cache curl \
-  && addgroup -S nodejs && adduser -S nestjs -G nodejs \
-  && chown -R nestjs:nodejs /app
-
-USER nestjs
+COPY --chown=nestjs:nodejs --from=builder /app/dist ./dist
 
 EXPOSE 3000
 CMD ["node", "dist/main"]

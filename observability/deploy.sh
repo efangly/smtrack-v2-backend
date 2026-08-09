@@ -3,15 +3,18 @@
 # Deploy observability stack (otel-collector, tempo, loki, prometheus, alloy, grafana)
 # บน dev server ที่มี mosquitto/minio/app รันอยู่แล้วผ่าน compose อื่นบน network เดียวกัน
 #
-#   cp .env.observability.example .env.observability   # แก้ค่าจริงก่อนรันครั้งแรก
-#   bash scripts/deploy-observability.sh
+#   cp observability/.env.example observability/.env   # แก้ค่าจริงก่อนรันครั้งแรก
+#   bash observability/deploy.sh
 #
 # exit 0 = deploy สำเร็จและทุก service healthy
 
 set -euo pipefail
 
-COMPOSE_FILE="docker-compose.observability.yml"
-ENV_FILE="${ENV_FILE:-.env.observability}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+COMPOSE_FILE="docker-compose.yml"
+ENV_FILE="${ENV_FILE:-.env}"
 
 PASS=0
 FAIL=0
@@ -27,7 +30,7 @@ compose() { docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"; }
 step "0. ตรวจความพร้อมก่อน deploy"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "ไม่พบ $ENV_FILE — copy จาก .env.observability.example แล้วแก้ค่าก่อน" >&2
+  echo "ไม่พบ $ENV_FILE — copy จาก .env.example แล้วแก้ค่าก่อน" >&2
   exit 1
 fi
 ok "พบ $ENV_FILE"
