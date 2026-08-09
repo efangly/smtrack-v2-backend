@@ -1,14 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { LogDays, Probes } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
-import { GraphRange, QueryGraphDto } from './dto/query-graph.dto';
-
-const RANGE_DAYS: Record<Exclude<GraphRange, GraphRange.CUSTOM>, number> = {
-  [GraphRange.DAY]: 1,
-  [GraphRange.WEEK]: 7,
-  [GraphRange.MONTH]: 30,
-};
+import { QueryGraphDto } from './dto/query-graph.dto';
+import { resolveRange, TimeRange } from '../common/time/range.util';
 
 /** channel ที่ใช้แทน series ของ log ที่ยังไม่ถูกผูก probe — ไม่ใช่ channel จริงของอุปกรณ์ */
 export const UNASSIGNED_CHANNEL = 'unassigned';
@@ -41,8 +36,8 @@ export class GraphService {
 
   /** `deviceId` = จุดติดตั้ง ไม่ใช่ serial ของกล่อง จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง */
   async series(deviceId: string, query: QueryGraphDto): Promise<ProbeSeries[]> {
-    const range = query.range ?? GraphRange.DAY;
-    const { from, to } = this.resolveRange(range, query.from, query.to);
+    const range = query.range ?? TimeRange.DAY;
+    const { from, to } = resolveRange(range, query.from, query.to);
     const probeId = query.probeId;
 
     return this.redis.getOrSet(
@@ -111,18 +106,5 @@ export class GraphService {
     }
 
     return series;
-  }
-
-  private resolveRange(range: GraphRange, from?: string, to?: string): { from: Date; to: Date } {
-    if (range === GraphRange.CUSTOM) {
-      if (!from || !to) {
-        throw new BadRequestException('from and to are required when range=custom');
-      }
-      return { from: new Date(from), to: new Date(to) };
-    }
-
-    const now = new Date();
-    const days = RANGE_DAYS[range];
-    return { from: new Date(now.getTime() - days * 24 * 60 * 60 * 1000), to: now };
   }
 }

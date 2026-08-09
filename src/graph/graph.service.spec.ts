@@ -3,7 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import { GraphService, UNASSIGNED_CHANNEL } from './graph.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
-import { GraphRange } from './dto/query-graph.dto';
+import { TimeRange as GraphRange } from '../common/time/range.util';
 
 /** probe แบบย่อ — ทดสอบสนใจแค่ field ที่ถูกยกไปใส่ series */
 const probe = (id: string, channel: string, name: string | null = `P${channel}`) => ({

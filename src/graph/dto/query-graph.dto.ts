@@ -1,16 +1,10 @@
 import { IsDateString, IsEnum, IsOptional, IsUUID } from 'class-validator';
-
-export enum GraphRange {
-  DAY = '1d',
-  WEEK = '7d',
-  MONTH = '30d',
-  CUSTOM = 'custom',
-}
+import { TimeRange } from '../../common/time/range.util';
 
 export class QueryGraphDto {
-  @IsEnum(GraphRange)
+  @IsEnum(TimeRange)
   @IsOptional()
-  range?: GraphRange = GraphRange.DAY;
+  range?: TimeRange = TimeRange.DAY;
 
   @IsDateString()
   @IsOptional()
