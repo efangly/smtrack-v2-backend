@@ -7,6 +7,13 @@
 
 name: smtrack
 
+# Observability stack (otel-collector/tempo/loki/prometheus/alertmanager/alloy/grafana) ไม่ได้
+# ฝังอยู่ในไฟล์นี้โดยตรง — ดึงมาจาก observability/docker-compose.yml ผ่าน `include:` เพื่อไม่ให้
+# service definition ซ้ำสองที่กับ standalone attach mode (observability/deploy.sh)
+# ดู override ของ networks/grafana/alertmanager ท้ายไฟล์นี้ที่จำเป็นสำหรับ full local dev
+include:
+  - observability/docker-compose.yml
+
 x-app-env: &app-env
   DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/smtrack
   MQTT_BROKER_URL: mqtt://mosquitto:1883
@@ -16,6 +23,7 @@ x-app-env: &app-env
   REDIS_URL: redis://redis:6379
   RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
   JWT_SECRET: local-dev-secret-not-for-production
+  DEVICE_SECRET: local-dev-device-secret-not-for-production
   ARCHIVE_RETENTION_MONTHS: '6'
   # archive object storage → MinIO ในเครือข่าย compose (S3-compatible)
   # forcePathStyle จำเป็นกับ MinIO เพราะไม่มี virtual-host style bucket
@@ -30,6 +38,14 @@ x-app-env: &app-env
   LOG_LEVEL: debug
   OTEL_SERVICE_NAME: smtrack-backend
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+
+# credential ของ MinIO ในเครือข่าย compose นี้ — reuse ตัวเดียวกับที่ app ใช้ export archive
+# (ARCHIVE_S3_ACCESS_KEY/SECRET_KEY ใน x-app-env) เพราะเป็น MinIO instance เดียวกัน — tempo/loki ต้องใช้ด้วย
+x-minio-env: &minio-env
+  MINIO_ENDPOINT: minio:9000
+  ARCHIVE_S3_ACCESS_KEY: minioadmin
+  ARCHIVE_S3_SECRET_KEY: minioadmin
+  ARCHIVE_S3_REGION: us-east-1
 
 services:
   # ── dependencies ────────────────────────────────────────────────────────────
@@ -101,7 +117,9 @@ services:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     entrypoint: >
       sh -c "mc alias set local http://minio:9000 minioadmin minioadmin &&
-             mc mb --ignore-existing local/smtrack-log-archive"
+             mc mb --ignore-existing local/smtrack-log-archive &&
+             mc mb --ignore-existing local/tempo-traces &&
+             mc mb --ignore-existing local/loki-chunks"
     depends_on:
       minio:
         condition: service_healthy
@@ -135,83 +153,51 @@ services:
       migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
     healthcheck:
-      test: ['CMD', 'curl', '-fsS', 'http://localhost:3000/health']
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:3000/log/health']
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 20s
 
-  # ── observability ───────────────────────────────────────────────────────────
+  # ── observability (service definition มาจาก observability/docker-compose.yml ผ่าน include:) ──
+  # override port publish + env ให้เหมาะกับ full local dev stack (anonymous grafana, ไม่ต้องตั้ง
+  # Telegram token) — ตัว service เองมาจาก included file ทั้งหมด ไม่ประกาศซ้ำ
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.121.0
-    command: ['--config=/etc/otelcol/config.yaml']
-    volumes:
-      - ./docker/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
     ports:
       - '4318:4318' # OTLP HTTP
       - '4317:4317' # OTLP gRPC
-    depends_on: [tempo, prometheus]
 
   tempo:
-    image: grafana/tempo:2.7.1
-    command: ['-config.file=/etc/tempo/tempo.yaml']
-    user: root
-    volumes:
-      - ./docker/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
-      - tempo-data:/var/tempo
     ports: ['3200:3200']
 
   loki:
-    image: grafana/loki:3.4.2
-    command: ['-config.file=/etc/loki/loki.yaml']
-    user: root
-    volumes:
-      - ./docker/loki/loki.yaml:/etc/loki/loki.yaml:ro
-      - loki-data:/loki
     ports: ['3100:3100']
 
   prometheus:
-    image: prom/prometheus:v3.2.1
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      # รับ metric แบบ OTLP push จาก Collector (แอปไม่ได้เปิด /metrics ให้ scrape)
-      - '--web.enable-otlp-receiver'
-      # Tempo metrics-generator ยิง service graph เข้ามาทาง remote write
-      - '--web.enable-remote-write-receiver'
-      - '--enable-feature=exemplar-storage'
-    volumes:
-      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
     ports: ['9090:9090']
 
+  alertmanager:
+    ports: ['9093:9093']
+
   alloy:
-    image: grafana/alloy:v1.7.5
-    command:
-      - run
-      - --server.http.listen-addr=0.0.0.0:12345
-      - --storage.path=/var/lib/alloy/data
-      - /etc/alloy/config.alloy
-    volumes:
-      - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
-      # อ่าน log ของ container ตัวอื่นผ่าน Docker API
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - alloy-data:/var/lib/alloy/data
     ports: ['12345:12345']
-    depends_on: [loki]
 
   grafana:
-    image: grafana/grafana:11.6.0
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: 'true'
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: 'true'
-      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
-    volumes:
-      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
-      - grafana-data:/var/lib/grafana
     # 3000 ชนกับ app จึง map ออกมาเป็น 3001
     ports: ['3001:3000']
-    depends_on: [tempo, loki, prometheus]
+
+# network ของ observability/docker-compose.yml (included file) ตั้งเป็น external:true ชี้ network
+# `proxy` (ไว้ใช้ตอน deploy แบบ standalone attach เข้า dev server จริง) — full local stack นี้ต้อง
+# override ทับให้ compose สร้าง network ของ project เอง (ไม่ external) มิเช่นนั้น `docker compose up`
+# จะ error ว่าหา network `proxy` ไม่เจอ
+networks:
+  default:
+    name: smtrack_default
+    external: false
 
 volumes:
   timescale-data:
@@ -219,5 +205,6 @@ volumes:
   tempo-data:
   loki-data:
   prometheus-data:
+  alertmanager-data:
   grafana-data:
   alloy-data:

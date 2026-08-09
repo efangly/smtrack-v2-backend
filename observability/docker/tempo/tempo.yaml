@@ -2,6 +2,10 @@
 # ด้วย flag -config.expand-env=true (ดู docker-compose.observability.yml)
 # หมายเหตุ: ห้ามเขียนสัญลักษณ์ดอลลาร์ลอย ๆ ในไฟล์นี้ (รวมถึงใน comment) เพราะตัว
 # expand-env parse ทั้งไฟล์แบบ strict ขึ้นต้นด้วยดอลลาร์ผิด syntax = crash ทั้งไฟล์
+# top-level key (ห้ามย้ายเข้าไปใต้ server: — ไม่ใช่ field ของ server.Config, ทำแบบนั้นแล้ว Tempo crash-loop มาแล้ว)
+# เปิด gRPC-over-HTTP streaming ให้ Grafana ทำ TraceQL search แบบ list ได้ผ่าน HTTP port เดียวกัน (3200) โดยไม่ต้องเปิด gRPC port แยก
+stream_over_http_enabled: true
+
 server:
   http_listen_port: 3200
 

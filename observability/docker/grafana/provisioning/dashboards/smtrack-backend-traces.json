@@ -1,0 +1,100 @@
+{
+  "uid": "smtrack-backend-traces",
+  "title": "SMtrack Backend - การติดตาม Trace",
+  "tags": ["smtrack", "backend", "trace"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**หมายเหตุ:** panel ค้นหา trace แบบ list (TraceQL search) ของ Grafana ในชุดทดสอบนี้ใช้ไม่ได้ เพราะ Tempo แบบ single-binary รุ่นนี้ไม่รองรับการค้นหาผ่าน gRPC streaming ที่ Grafana เรียกใช้ภายใน — แต่การดู trace เดี่ยวจาก trace ID (เช่นกดจาก log ใน Loki) ยังใช้งานได้ปกติ และสามารถค้นหา trace ผ่าน Tempo API โดยตรงได้ที่ `curl http://localhost:3200/api/search?tags=service.name=smtrack-backend`"
+      }
+    },
+    {
+      "id": 2,
+      "type": "nodeGraph",
+      "title": "แผนผังการเรียกใช้บริการ (Service Graph)",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 3 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "serviceMap"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "อัตราการเรียก Span ต่อวินาที (แยกตามชื่อ Span)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(traces_spanmetrics_calls_total{service=\"smtrack-backend\"}[$__rate_interval])) by (span_name)",
+          "legendFormat": "{{span_name}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "ความหน่วง Span p95 (แยกตามชื่อ Span)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(traces_spanmetrics_latency_bucket{service=\"smtrack-backend\"}[$__rate_interval])) by (le, span_name))",
+          "legendFormat": "{{span_name}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "อัตรา Span ที่มีข้อผิดพลาด (Error)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(traces_spanmetrics_calls_total{service=\"smtrack-backend\", status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval])) by (span_name)",
+          "legendFormat": "{{span_name}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "อัตราการเรียกระหว่างบริการ (Client → Server)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(traces_service_graph_request_total[$__rate_interval])) by (client, server)",
+          "legendFormat": "{{client}} → {{server}}"
+        }
+      ]
+    }
+  ]
+}

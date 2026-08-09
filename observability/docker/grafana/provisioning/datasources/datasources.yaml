@@ -26,6 +26,8 @@ datasources:
         datasourceUid: prometheus
       nodeGraph:
         enabled: true
+      # ต้องคู่กับ stream_over_http_enabled: true ใน docker/tempo/tempo.yaml (Tempo 2.8.1+)
+      # ถึงจะใช้ TraceQL search panel/Explore แบบ list ได้ ไม่งั้นจะเจอ "TraceQL search queries are not supported"
       streamingEnabled:
         search: true
 
