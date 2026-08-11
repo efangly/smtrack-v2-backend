@@ -4,6 +4,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DeviceRepairService } from './device-repair.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppEvents } from '../common/events/app-events';
+import { RepairStatus } from './enums/repair-status.enum';
 
 describe('DeviceRepairService', () => {
   let service: DeviceRepairService;
@@ -11,6 +12,7 @@ describe('DeviceRepairService', () => {
     repairs: {
       create: jest.Mock;
       findMany: jest.Mock;
+      count: jest.Mock;
       findUnique: jest.Mock;
       update: jest.Mock;
       delete: jest.Mock;
@@ -26,6 +28,7 @@ describe('DeviceRepairService', () => {
       repairs: {
         create: jest.fn(),
         findMany: jest.fn(),
+        count: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
         delete: jest.fn(),
@@ -59,6 +62,32 @@ describe('DeviceRepairService', () => {
     expect(result).toEqual(repair);
   });
 
+  it('findAll ไม่มี where ถ้าไม่ส่ง status', async () => {
+    prisma.repairs.findMany.mockResolvedValue([repair]);
+    prisma.repairs.count.mockResolvedValue(1);
+
+    await service.findAll({ page: 1, limit: 20 });
+
+    expect(prisma.repairs.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
+    expect(prisma.repairs.count).toHaveBeenCalledWith({ where: undefined });
+  });
+
+  it('findAll กรองด้วย status ถ้าส่งมา', async () => {
+    prisma.repairs.findMany.mockResolvedValue([repair]);
+    prisma.repairs.count.mockResolvedValue(1);
+
+    await service.findAll({ page: 1, limit: 1, status: RepairStatus.IN_PROGRESS });
+
+    expect(prisma.repairs.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { status: RepairStatus.IN_PROGRESS } }),
+    );
+    expect(prisma.repairs.count).toHaveBeenCalledWith({
+      where: { status: RepairStatus.IN_PROGRESS },
+    });
+  });
+
   it('findBySerial กรองด้วย serial เรียงใหม่ไปเก่า', async () => {
     prisma.repairs.findMany.mockResolvedValue([repair]);
 
@@ -79,11 +108,11 @@ describe('DeviceRepairService', () => {
   it('update ตัด serial ออกจาก dto ก่อนเขียน แล้ว emit repair.changed (updated)', async () => {
     prisma.repairs.update.mockResolvedValue(repair);
 
-    await service.update('rep-1', { serial: 'SN-2', status: 'closed' }, actor);
+    await service.update('rep-1', { serial: 'SN-2', status: RepairStatus.RESOLVED }, actor);
 
     expect(prisma.repairs.update).toHaveBeenCalledWith({
       where: { id: 'rep-1' },
-      data: { status: 'closed' },
+      data: { status: RepairStatus.RESOLVED },
     });
     expect(events.emit).toHaveBeenCalledWith(
       AppEvents.REPAIR_CHANGED,

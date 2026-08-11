@@ -21,8 +21,8 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
+import { QueryRepairDto } from './dto/query-repair.dto';
 
 // หมายเหตุ: ประวัติซ่อม (เบอร์โทร/ที่อยู่/สถานะ) เป็นข้อมูลแอดมินภายใน ไม่ใช่ dashboard สาธารณะ
 // จึง guard ทุก route รวมถึง GET ด้วย RolesGuard ต่างจาก device/probe/config ที่ GET ไม่ guard
@@ -43,8 +43,8 @@ export class DeviceRepairController {
   }
 
   @Get()
-  findAll(@Query() pagination: PaginationQueryDto): Promise<Paginated<Repairs>> {
-    return this.repairService.findAll(pagination);
+  findAll(@Query() query: QueryRepairDto): Promise<Paginated<Repairs>> {
+    return this.repairService.findAll(query);
   }
 
   @Get('by-serial/:serial')

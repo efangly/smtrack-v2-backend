@@ -190,3 +190,64 @@ SELECT sum(row_count) FROM archive_export;
 
 In Mongo, for comparison: `db.notifications.countDocuments()` and `db.logdays.countDocuments()`
 (adjusting for skipped rows logged during the run).
+
+## Migrate legacy firmware drive (`migrate-firmware.ts`)
+
+Third script, independent of the other two. Source is the legacy file-drive service at
+`https://drive.siamatic.co.th` (`GET /api/drive` lists files as `{ fileName, filePath, fileSize,
+createDate }`; each file itself is downloaded from `{filePath}` on the same host — both endpoints
+need the same bearer token). Destination is this project's `Firmwares` table + the `firmware.s3`
+MinIO bucket (same bucket/service the app's `src/firmware` module uses for normal admin uploads).
+
+### Field mapping
+
+- `version` = `fileName` with its extension stripped (e.g. `eTEMPV2.1.5a_MAIN.bin` →
+  `eTEMPV2.1.5a_MAIN`). The legacy filenames aren't consistent semver, so the bare filename is
+  used as-is — it's already unique across the drive and satisfies `Firmwares.version`'s `@unique`
+  constraint without needing to parse a version scheme. This includes non-OTA support files
+  (`bootloader.bin`, `partitions.bin`) — everything on the drive is imported, no filtering.
+- `createAt`/`updateAt` = the original `createDate` from the drive API, **not** migration run
+  time — `GET /firmware/latest` (`orderBy createAt desc`) depends on this to resolve to whichever
+  file was actually newest on the legacy drive.
+- `checksum` = sha256 computed locally from the downloaded bytes (the drive API's `fileSize` is
+  just a human-readable string like `"1.72MB"`, not reliable enough to verify against — only
+  checked for non-empty).
+- `fileKey` follows the exact same convention as a normal admin upload:
+  `` `firmware/${randomUUID()}${extname(fileName)}` `` via `FirmwareStorageService` — migrated rows
+  are indistinguishable from rows created through the API.
+
+### Guarded, not idempotent-by-overwrite
+
+Before downloading each file, the script checks whether a `Firmwares` row with that `version`
+already exists and skips it if so (logged). `Firmwares.version` is treated as immutable once
+created (same convention as `firmware.service.ts` `update()`), so re-running is safe — already
+migrated versions are never re-uploaded or overwritten. A changed file on the drive under the same
+filename would need a new version/manual handling, not something this script resolves.
+
+### Prerequisites
+
+```env
+DRIVE_API_URL=https://drive.siamatic.co.th   # default if unset
+DRIVE_API_TOKEN=<bearer token>
+```
+
+- `FIRMWARE_S3_*` (or `ARCHIVE_S3_*` fallback) env vars must already be configured — this script
+  uploads to the exact same bucket the app's `src/firmware` module uses.
+- Never commit a real `DRIVE_API_TOKEN` — it's a short-lived bearer token for the legacy drive
+  service, put it in `.env` or export it for the one-off run only.
+
+### Running it
+
+```bash
+npx ts-node scripts/migrate-legacy/migrate-firmware.ts
+```
+
+### Verifying after the run
+
+```sql
+SELECT count(*) FROM firmwares;
+SELECT version, file_name, file_size, checksum, create_at FROM firmwares ORDER BY create_at DESC LIMIT 5;
+```
+
+Newest `create_at` should match the drive API's newest `createDate`. Spot-check
+`GET /firmware/latest` and `GET /firmware/download/:version` on the running app resolve correctly.

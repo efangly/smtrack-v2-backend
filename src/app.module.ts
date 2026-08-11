@@ -15,6 +15,7 @@ import { MqttModule } from './mqtt/mqtt.module';
 import { FcmModule } from './fcm/fcm.module';
 import { NotificationModule } from './notification/notification.module';
 import { DeviceModule } from './device/device.module';
+import { AdjustModule } from './adjust/adjust.module';
 import { AuditModule } from './audit/audit.module';
 import { ProbeModule } from './probe/probe.module';
 import { DeviceConfigModule } from './device-config/device-config.module';
@@ -56,6 +57,7 @@ import { MobileModule } from './mobile/mobile.module';
     FcmModule,
     NotificationModule,
     DeviceModule,
+    AdjustModule,
     AuditModule,
     ProbeModule,
     DeviceConfigModule,

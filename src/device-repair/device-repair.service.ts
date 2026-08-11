@@ -7,7 +7,7 @@ import { DeviceChangeActor } from '../common/events/device-changed.event';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRepairDto } from './dto/create-repair.dto';
 import { UpdateRepairDto } from './dto/update-repair.dto';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { QueryRepairDto } from './dto/query-repair.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
@@ -38,16 +38,18 @@ export class DeviceRepairService {
     return repair;
   }
 
-  async findAll(pagination: PaginationQueryDto): Promise<Paginated<Repairs>> {
+  async findAll(query: QueryRepairDto): Promise<Paginated<Repairs>> {
+    const where = query.status ? { status: query.status } : undefined;
     const [data, total] = await Promise.all([
       this.prisma.repairs.findMany({
+        where,
         orderBy: { createAt: 'desc' },
-        skip: paginationSkip(pagination),
-        take: pagination.limit ?? 20,
+        skip: paginationSkip(query),
+        take: query.limit ?? 20,
       }),
-      this.prisma.repairs.count(),
+      this.prisma.repairs.count({ where }),
     ]);
-    return toPaginated(data, total, pagination);
+    return toPaginated(data, total, query);
   }
 
   findBySerial(serial: string): Promise<Repairs[]> {

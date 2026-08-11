@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { DeviceRepairController } from './device-repair.controller';
 import { DeviceRepairService } from './device-repair.service';
+import { RepairStatus } from './enums/repair-status.enum';
 
 describe('DeviceRepairController', () => {
   let controller: DeviceRepairController;
@@ -51,8 +52,12 @@ describe('DeviceRepairController', () => {
   it('update ส่ง id, dto และ actor ให้ service', async () => {
     repairService.update.mockResolvedValue({ id: 'rep-1' });
 
-    await controller.update('rep-1', { status: 'closed' }, req);
+    await controller.update('rep-1', { status: RepairStatus.RESOLVED }, req);
 
-    expect(repairService.update).toHaveBeenCalledWith('rep-1', { status: 'closed' }, user);
+    expect(repairService.update).toHaveBeenCalledWith(
+      'rep-1',
+      { status: RepairStatus.RESOLVED },
+      user,
+    );
   });
 });

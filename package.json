@@ -20,6 +20,7 @@
     "seed": "ts-node prisma/seed.ts",
     "migrate:legacy": "ts-node scripts/migrate-legacy/migrate-legacy-device.ts",
     "migrate:legacy:backup": "ts-node scripts/migrate-legacy/migrate-legacy-backup.ts",
+    "migrate:firmware": "ts-node scripts/migrate-legacy/migrate-firmware.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "docs:export": "curl -s http://localhost:${PORT:-3000}/docs-json -o docs/openapi.json && echo 'Exported docs/openapi.json'",
