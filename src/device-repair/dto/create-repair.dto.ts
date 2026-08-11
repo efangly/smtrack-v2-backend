@@ -1,4 +1,5 @@
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { RepairStatus } from '../enums/repair-status.enum';
 
 export class CreateRepairDto {
   @IsString()
@@ -37,9 +38,9 @@ export class CreateRepairDto {
   @IsOptional()
   phone?: string;
 
-  @IsString()
+  @IsEnum(RepairStatus)
   @IsOptional()
-  status?: string;
+  status?: RepairStatus;
 
   @IsString()
   @IsOptional()
