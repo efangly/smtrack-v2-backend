@@ -37,10 +37,10 @@ describe('Notifications (e2e)', () => {
 
   beforeEach(() => {
     mocks.mqtt.publishNotification.mockClear();
-    mocks.fcm.pushToSerial.mockClear();
+    mocks.rabbitmq.emit.mockClear();
   });
 
-  describe('POST /notifications — fan-out ผ่าน MQTT + SSE + FCM', () => {
+  describe('POST /notifications — fan-out ผ่าน MQTT + SSE + FCM (publish ผ่าน RabbitMQ)', () => {
     it('สร้าง notification แล้วบันทึกผล delivery ทั้งสองช่องทางกลับลง DB', async () => {
       const dto = buildNotifications(serial)[0];
 
@@ -77,7 +77,7 @@ describe('Notifications (e2e)', () => {
       );
     });
 
-    it('broadcast ไป FCM topic ครั้งเดียว ไม่วนส่งราย token', async () => {
+    it('publish เข้า RabbitMQ (fcm-push) ครั้งเดียว ให้ FCM service แยกต่างหากไปยิง push เอง', async () => {
       const dto = buildNotifications(serial)[2];
 
       await request(app.getHttpServer())
@@ -85,16 +85,19 @@ describe('Notifications (e2e)', () => {
         .set('Authorization', bearerDevice(serial))
         .send(dto);
 
-      expect(mocks.fcm.pushToSerial).toHaveBeenCalledTimes(1);
-      expect(mocks.fcm.pushToSerial).toHaveBeenCalledWith(
-        serial,
-        { title: dto.message, body: dto.detail },
-        expect.objectContaining({ serial }),
+      expect(mocks.rabbitmq.emit).toHaveBeenCalledTimes(1);
+      expect(mocks.rabbitmq.emit).toHaveBeenCalledWith(
+        'fcm-push',
+        expect.objectContaining({
+          serial,
+          notification: { title: dto.message, body: dto.detail },
+          data: expect.objectContaining({ serial }),
+        }),
       );
     });
 
-    it('FCM ล้มเหลวไม่บล็อก SSE — ยังสร้าง notification สำเร็จแต่ deliveredFcm=false', async () => {
-      mocks.fcm.pushToSerial.mockRejectedValueOnce(new Error('FCM ล่ม'));
+    it('publish ไป RabbitMQ ล้มเหลวไม่บล็อก SSE — ยังสร้าง notification สำเร็จแต่ deliveredFcm=false', async () => {
+      mocks.rabbitmq.emit.mockRejectedValueOnce(new Error('broker ล่ม'));
 
       const res = await request(app.getHttpServer())
         .post(`${API_PREFIX}/notifications`)
@@ -104,6 +107,46 @@ describe('Notifications (e2e)', () => {
       expect(res.status).toBe(201);
       expect(unwrap(res.body).deliveredSse).toBe(true);
       expect(unwrap(res.body).deliveredFcm).toBe(false);
+    });
+
+    it('notification ที่มี probe → payload fcm-push แนบ probe/probeId ไปใน data', async () => {
+      await request(app.getHttpServer())
+        .post(`${API_PREFIX}/notifications`)
+        .set('Authorization', bearerDevice(serial))
+        .send({ serial, message: 'PROBE/TEMP/OVER', detail: 'probe 2 อุณหภูมิเกิน', probe: '2' });
+
+      const [, payload] = mocks.rabbitmq.emit.mock.calls[mocks.rabbitmq.emit.mock.calls.length - 1];
+      expect(payload.data).toMatchObject({ probe: '2', probeId: expect.any(String) });
+    });
+
+    it('notification ที่ไม่มี probe → payload fcm-push ไม่ยัด key probe/probeId ว่างเข้า data', async () => {
+      await request(app.getHttpServer())
+        .post(`${API_PREFIX}/notifications`)
+        .set('Authorization', bearerDevice(serial))
+        .send({ serial, message: 'AC/OFF', detail: 'ไฟดับ' });
+
+      const [, payload] = mocks.rabbitmq.emit.mock.calls[mocks.rabbitmq.emit.mock.calls.length - 1];
+      expect(payload.data).not.toHaveProperty('probe');
+      expect(payload.data).not.toHaveProperty('probeId');
+    });
+
+    it('ยิงสองคำขอติดกันด้วย serial ต่างกัน → แต่ละครั้ง publish payload ที่มี serial ถูกต้องของตัวเอง', async () => {
+      const serial2 = serialFor(E2E_PREFIX, 2);
+      await seedDevice(prisma, buildDevices(E2E_PREFIX)[1]);
+
+      await request(app.getHttpServer())
+        .post(`${API_PREFIX}/notifications`)
+        .set('Authorization', bearerDevice(serial))
+        .send({ serial, message: 'AC/OFF', detail: 'กล่อง 1' });
+
+      await request(app.getHttpServer())
+        .post(`${API_PREFIX}/notifications`)
+        .set('Authorization', bearerDevice(serial2))
+        .send({ serial: serial2, message: 'AC/OFF', detail: 'กล่อง 2' });
+
+      const calls = mocks.rabbitmq.emit.mock.calls.slice(-2);
+      expect(calls[0][1]).toMatchObject({ serial });
+      expect(calls[1][1]).toMatchObject({ serial: serial2 });
     });
 
     it('MQTT ล้มเหลวไม่ทำให้ request พัง (notification ยังถูกบันทึก)', async () => {

@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { MqttClientService } from '../mqtt/mqtt-client.service';
 import { SseService } from '../sse/sse.service';
-import { FcmService } from '../fcm/fcm.service';
+import { RabbitmqService } from '../rabbitmq/rabbitmq.service';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { MetricsService } from '../observability/metrics.service';
@@ -23,7 +23,7 @@ describe('NotificationService', () => {
   let redis: { getOrSet: jest.Mock; del: jest.Mock };
   let mqtt: { publishNotification: jest.Mock };
   let sse: { broadcast: jest.Mock };
-  let fcm: { pushToSerial: jest.Mock };
+  let rabbitmq: { emit: jest.Mock };
   let metrics: jest.Mocked<MetricsService>;
   let assignments: { resolveDeviceId: jest.Mock; resolveWard: jest.Mock };
   let probes: { resolveProbeId: jest.Mock };
@@ -47,9 +47,7 @@ describe('NotificationService', () => {
     };
     mqtt = { publishNotification: jest.fn().mockResolvedValue(undefined) };
     sse = { broadcast: jest.fn() };
-    fcm = {
-      pushToSerial: jest.fn().mockResolvedValue({ topic: 'device_SN-1', sent: true }),
-    };
+    rabbitmq = { emit: jest.fn().mockResolvedValue(undefined) };
     metrics = createMetricsMock();
     // กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1 — notification ถูกประทับ deviceId เช่นเดียวกับ log
     assignments = {
@@ -65,7 +63,7 @@ describe('NotificationService', () => {
         { provide: RedisService, useValue: redis },
         { provide: MqttClientService, useValue: mqtt },
         { provide: SseService, useValue: sse },
-        { provide: FcmService, useValue: fcm },
+        { provide: RabbitmqService, useValue: rabbitmq },
         { provide: DeviceAssignmentService, useValue: assignments },
         { provide: ProbeResolverService, useValue: probes },
         ...observabilityTestProviders(metrics),
@@ -117,17 +115,19 @@ describe('NotificationService', () => {
 
       await service.create({ serial: 'SN-1', message: 'PROBE/TEMP/OVER', probe: '2' });
 
-      expect(fcm.pushToSerial).toHaveBeenCalledWith(
-        'SN-1',
-        expect.anything(),
-        expect.objectContaining({ probe: '2', probeId: 'probe-1' }),
+      expect(rabbitmq.emit).toHaveBeenCalledWith(
+        'fcm-push',
+        expect.objectContaining({
+          serial: 'SN-1',
+          data: expect.objectContaining({ probe: '2', probeId: 'probe-1' }),
+        }),
       );
     });
 
     it('notification ที่ไม่มี probe ไม่ยัด key ว่างเข้า data ของ FCM', async () => {
       await service.create({ serial: 'SN-1', message: 'AC/OFF' });
 
-      const data = fcm.pushToSerial.mock.calls[0][2];
+      const data = rabbitmq.emit.mock.calls[0][1].data;
       expect(data).not.toHaveProperty('probe');
       expect(data).not.toHaveProperty('probeId');
     });
@@ -144,7 +144,10 @@ describe('NotificationService', () => {
       { ...baseNotif, unreadCount: 0 },
       'OPD',
     );
-    expect(fcm.pushToSerial).toHaveBeenCalled();
+    expect(rabbitmq.emit).toHaveBeenCalledWith(
+      'fcm-push',
+      expect.objectContaining({ serial: 'SN-1', notification: { title: 'hi', body: 'd' } }),
+    );
     expect(prisma.notifications.update).toHaveBeenCalledWith({
       where: { id: 'n1' },
       data: { deliveredSse: true, deliveredFcm: true },
@@ -160,28 +163,19 @@ describe('NotificationService', () => {
 
     await service.create({ serial: 'SN-1', message: 'hi' });
 
-    expect(fcm.pushToSerial).toHaveBeenCalled();
+    expect(rabbitmq.emit).toHaveBeenCalled();
     expect(prisma.notifications.update).toHaveBeenCalledWith({
       where: { id: 'n1' },
       data: { deliveredSse: false, deliveredFcm: true },
     });
   });
 
-  it('FCM พัง แต่ SSE ยังส่ง — deliveredFcm=false, deliveredSse=true', async () => {
-    fcm.pushToSerial.mockRejectedValue(new Error('fcm down'));
+  it('RabbitMQ publish พัง แต่ SSE ยังส่ง — deliveredFcm=false, deliveredSse=true', async () => {
+    rabbitmq.emit.mockRejectedValue(new Error('broker down'));
 
     await service.create({ serial: 'SN-1', message: 'hi' });
 
     expect(sse.broadcast).toHaveBeenCalled();
-    expect(prisma.notifications.update).toHaveBeenCalledWith({
-      where: { id: 'n1' },
-      data: { deliveredSse: true, deliveredFcm: false },
-    });
-  });
-
-  it('FCM broadcast ไม่สำเร็จ (sent=false) → deliveredFcm=false', async () => {
-    fcm.pushToSerial.mockResolvedValue({ topic: 'device_SN-1', sent: false });
-    await service.create({ serial: 'SN-1', message: 'hi' });
     expect(prisma.notifications.update).toHaveBeenCalledWith({
       where: { id: 'n1' },
       data: { deliveredSse: true, deliveredFcm: false },
@@ -192,7 +186,7 @@ describe('NotificationService', () => {
     mqtt.publishNotification.mockRejectedValue(new Error('broker down'));
     await service.create({ serial: 'SN-1', message: 'hi' });
     expect(sse.broadcast).toHaveBeenCalled();
-    expect(fcm.pushToSerial).toHaveBeenCalled();
+    expect(rabbitmq.emit).toHaveBeenCalled();
   });
 
   it('กล่องที่ยังไม่ถูกติดตั้ง (deviceId เป็น null) → ข้าม MQTT publish แต่ SSE/FCM ยังทำงาน', async () => {
@@ -202,7 +196,7 @@ describe('NotificationService', () => {
 
     expect(mqtt.publishNotification).not.toHaveBeenCalled();
     expect(sse.broadcast).toHaveBeenCalled();
-    expect(fcm.pushToSerial).toHaveBeenCalled();
+    expect(rabbitmq.emit).toHaveBeenCalled();
   });
 
   describe('classification', () => {

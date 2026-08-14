@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { MqttClientService } from '../mqtt/mqtt-client.service';
 import { SseService } from '../sse/sse.service';
-import { FcmService } from '../fcm/fcm.service';
+import { RabbitmqService } from '../rabbitmq/rabbitmq.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
 import { TraceService } from '../observability/trace.service';
@@ -16,6 +16,7 @@ import { NotificationQueryDto } from './dto/query-notification.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 import { classifyNotification } from './notification-classifier.util';
+import { FCM_PUSH_PATTERN } from '../config/rabbitmq.config';
 
 const bySerialKey = (serial: string) => `notification:${serial}`;
 
@@ -36,7 +37,7 @@ export class NotificationService {
     private readonly redis: RedisService,
     private readonly mqttClient: MqttClientService,
     private readonly sseService: SseService,
-    private readonly fcmService: FcmService,
+    private readonly rabbitmqService: RabbitmqService,
     private readonly traceService: TraceService,
     private readonly metrics: MetricsService,
     private readonly assignments: DeviceAssignmentService,
@@ -135,29 +136,29 @@ export class NotificationService {
     );
   }
 
-  /** broadcast ไปยัง FCM topic ของ serial (ปลุก mobile app ที่ปิดอยู่) */
+  /** publish ข้อมูล push notification ผ่าน RabbitMQ ไปยัง FCM service แยกต่างหาก (ปลุก mobile app ที่ปิดอยู่) */
   private async deliverFcm(notification: Notifications): Promise<boolean> {
     return this.traceService.withSpan(
       'notification.fcm',
       { 'device.serial': notification.serial },
       async () => {
         try {
-          const result = await this.fcmService.pushToSerial(
-            notification.serial,
-            { title: notification.message, body: notification.detail },
-            {
+          await this.rabbitmqService.emit(FCM_PUSH_PATTERN, {
+            serial: notification.serial,
+            notification: { title: notification.message, body: notification.detail },
+            data: {
               serial: notification.serial,
               notificationId: notification.id,
-              // topic ยังเป็นระดับกล่อง (device_{serial}) ตามเดิม — probe ไปเป็น data
+              // topic เป็นระดับกล่อง (device_{serial}) ให้ FCM service ปลายทางสร้างเอง — probe ไปเป็น data
               // ให้ mobile กรอง/ชี้จุดเองว่าเป็น probe ไหน ไม่แตก topic ต่อ probe
               ...(notification.probe ? { probe: notification.probe } : {}),
               ...(notification.probeId ? { probeId: notification.probeId } : {}),
             },
-          );
-          this.metrics.recordNotificationDelivery('fcm', result.sent ? 'success' : 'error');
-          return result.sent;
+          });
+          this.metrics.recordNotificationDelivery('fcm', 'success');
+          return true;
         } catch (err) {
-          this.logger.error(`FCM push failed: ${this.msg(err)}`);
+          this.logger.error(`FCM publish via RabbitMQ failed: ${this.msg(err)}`);
           this.metrics.recordNotificationDelivery('fcm', 'error');
           this.traceService.recordOnActiveSpan(err);
           return false;

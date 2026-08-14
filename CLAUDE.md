@@ -9,11 +9,12 @@
 - **TimescaleDB** (PostgreSQL extension) สำหรับเก็บ time-series log — query ร่วมกับข้อมูล relational อื่นผ่าน Prisma/SQL ตัวเดียวกันได้ ไม่ต้องดูแลฐานข้อมูลสองระบบ
 - **SSE (Server-Sent Events)** สำหรับ push ข้อมูล real-time ไปยัง frontend — เหมาะกับ one-way stream (server → client), เบา, ทำงานผ่าน HTTP ปกติได้โดยไม่ต้องจัดการ connection upgrade
 - **MQTT** สำหรับทั้งการรับข้อมูลจากอุปกรณ์และการกระจายการแจ้งเตือน — ทุกอย่างเดินผ่าน MQTT publish/subscribe เพื่อลด coupling และได้ retry/QoS ของ MQTT มาโดยตรง
+- **RabbitMQ** สำหรับ event ภายในระหว่าง service (ไม่ใช่การสื่อสารกับอุปกรณ์) — รวมถึงการ publish ข้อมูล push notification ไปให้ **FCM service ที่แยกเป็น microservice ต่างหาก** (นอกโปรเจคนี้) เป็นคน consume แล้วยิง push จริงผ่าน Firebase Admin SDK — โปรเจคนี้ทำหน้าที่แค่ publisher เท่านั้น ไม่มีการเรียก Firebase โดยตรงในเรพโปนี้อีกต่อไป
 
 **หน้าที่หลักของระบบ**
 - Subscribe MQTT topics จากอุปกรณ์ IoT (sensor/device) แบบ real-time เพื่อรับ log/telemetry
 - Validate, transform, และบันทึกข้อมูล log/telemetry ลง TimescaleDB (time-series) และ metadata ลง PostgreSQL ปกติผ่าน Prisma
-- ประมวลผล/สร้างการแจ้งเตือน (notification) แล้ว publish ผ่าน MQTT topic พร้อมส่งต่อให้ผู้ใช้ผ่าน 2 ช่องทาง: **SSE** (สำหรับ client ที่เปิดหน้าเว็บ/dashboard ค้างอยู่) และ **FCM (Firebase Cloud Messaging)** (สำหรับ push notification ไปยัง mobile app แม้ปิดแอปอยู่)
+- ประมวลผล/สร้างการแจ้งเตือน (notification) แล้ว publish ผ่าน MQTT topic พร้อมส่งต่อให้ผู้ใช้ผ่าน 2 ช่องทาง: **SSE** (สำหรับ client ที่เปิดหน้าเว็บ/dashboard ค้างอยู่) และ **RabbitMQ → FCM service แยกต่างหาก** (สำหรับ push notification ไปยัง mobile app แม้ปิดแอปอยู่ — โปรเจคนี้แค่ publish message เข้าคิว ไม่ยิง push เอง)
 - เปิด REST API และ SSE endpoint ให้ frontend หรือระบบอื่นดึงข้อมูลย้อนหลังและรับ stream แบบ real-time (log ใหม่, notification ใหม่)
 - รองรับคำสั่งย้อนกลับไปยังอุปกรณ์ (command/control ผ่าน MQTT publish)
 - งานเสริม: backup/cleanup ข้อมูลเก่าเป็นระยะ, สรุปข้อมูลรายวัน (log-by-day), health check
@@ -24,9 +25,9 @@
 - **ORM:** Prisma + PostgreSQL พร้อม **TimescaleDB extension** — ใช้ hypertable เก็บ log/telemetry แบบ time-series
 - **MQTT Broker Client:** `mqtt` package หรือ NestJS microservices MQTT transport (`@nestjs/microservices`) — ใช้ทั้งฝั่ง ingest log จากอุปกรณ์ และฝั่ง publish notification
 - **Real-time push ไปยัง client:** SSE (`@Sse()` decorator + RxJS `Observable`)
-- **Mobile push notification:** Firebase Admin SDK (FCM) — ใช้คู่กับ SSE สำหรับ notification, FCM ใช้กรณี client ปิดแอป/ไม่มี connection ค้างอยู่
+- **Mobile push notification:** publish ผ่าน RabbitMQ (`ClientProxy`, `@nestjs/microservices`) ไปยัง **FCM service แยกต่างหาก** (นอกโปรเจคนี้) ที่ถือ Firebase Admin SDK และยิง push จริง — ใช้คู่กับ SSE สำหรับ notification, FCM ใช้กรณี client ปิดแอป/ไม่มี connection ค้างอยู่ โปรเจคนี้ไม่มี dependency ของ `firebase-admin` แล้ว
 - **Cache:** Redis
-- **Message Queue ภายใน (service-to-service):** RabbitMQ สำหรับ event ระหว่าง microservice ที่ไม่ใช่การสื่อสารกับอุปกรณ์
+- **Message Queue ภายใน (service-to-service):** RabbitMQ สำหรับ event ระหว่าง microservice ที่ไม่ใช่การสื่อสารกับอุปกรณ์ (`@nestjs/microservices` RMQ transport) — ใช้ทั้งฝั่ง consume (device online/offline, log/notification จาก legacy) และฝั่ง publish (ส่งข้อมูล push notification ไปยัง FCM service)
 - **Auth:** JWT + Passport (role-based access control)
 - **Validation:** `class-validator` + `class-transformer`
 - **Config:** `@nestjs/config` + `.env`
@@ -67,11 +68,8 @@ src/
 ├── logday/                      # สรุปข้อมูลรายวันจาก timescaledb (rollup/aggregate)
 ├── notification/
 │   ├── notification.module.ts
-│   ├── notification.service.ts  # สร้าง/บันทึกการแจ้งเตือน แล้ว publish ผ่าน mqtt + push ผ่าน sse และ fcm
+│   ├── notification.service.ts  # สร้าง/บันทึกการแจ้งเตือน แล้ว publish ผ่าน mqtt + push ผ่าน sse และ publish เข้า rabbitmq (fcm-push) ให้ FCM service แยกต่างหาก
 │   └── notification.controller.ts
-├── fcm/
-│   ├── fcm.module.ts
-│   └── fcm.service.ts           # wrap Firebase Admin SDK, broadcast push ไปยัง FCM topic ต่ออุปกรณ์ (topic messaging)
 ├── device/
 │   ├── device.module.ts
 │   ├── device.service.ts        # จัดการ device registry, auth, status
@@ -79,9 +77,10 @@ src/
 ├── graph/                       # query/aggregate สำหรับ dashboard กราฟ
 ├── backup/                      # backup/cleanup ข้อมูลเก่าเป็นระยะ (cron)
 ├── health/                      # health check (`@nestjs/terminus`)
-├── mobile/                      # REST endpoints เฉพาะ mobile client (รวมถึง register/unregister fcmToken)
+├── mobile/                      # REST endpoints เฉพาะ mobile client
 ├── redis/                       # cache layer
-├── rabbitmq/                    # event bus ภายในระหว่าง microservice (ไม่ใช่การสื่อสารกับอุปกรณ์)
+├── rabbitmq/                    # @Global() module — event bus ภายในระหว่าง microservice (ไม่ใช่การสื่อสารกับอุปกรณ์)
+│                                 # ทั้ง consume (device online/offline, log/notification จาก legacy) และ publish (fcm-push ไปยัง FCM service แยกต่างหาก) ผ่าน RabbitmqService/ClientProxy
 ├── consumer/                    # รับ event จาก rabbitmq แล้วส่งต่อ business logic
 └── common/
     ├── filters/
@@ -110,7 +109,7 @@ notification/{deviceId}          # server publish การแจ้งเตื
 - ตั้ง `retain` เฉพาะ topic สถานะล่าสุด (เช่น status) ไม่ใช้กับ telemetry/log สตรีมต่อเนื่อง
 - Payload เป็น JSON เสมอ และควร validate schema ก่อนเข้าสู่ business logic (เช่นด้วย `class-validator` หรือ `zod`)
 - เมื่อรับ log ผ่าน MQTT แล้วบันทึกลง TimescaleDB สำเร็จ ให้ยิง event ภายใน (`EventEmitter2`) เพื่อให้โมดูล `sse` push ไปยัง client ที่ subscribe อยู่แบบ real-time ทันที
-- เมื่อโมดูล `notification` สร้างการแจ้งเตือนใหม่ ให้ publish ผ่าน MQTT topic (`notification/{deviceId}`) แล้วส่งต่อพร้อมกัน 2 ทาง: push เข้า SSE stream ให้ frontend/dashboard ที่เปิดค้างอยู่ และเรียกโมดูล `fcm` เพื่อ **broadcast** push notification ไปยัง FCM topic ของอุปกรณ์นั้น (`device_{deviceId}`) แบบยิงครั้งเดียว — mobile app เป็นฝั่ง subscribe topic เอง ไม่ใช่ให้ server วนส่งราย `fcmToken`/ราย user
+- เมื่อโมดูล `notification` สร้างการแจ้งเตือนใหม่ ให้ publish ผ่าน MQTT topic (`notification/{deviceId}`) แล้วส่งต่อพร้อมกัน 2 ทาง: push เข้า SSE stream ให้ frontend/dashboard ที่เปิดค้างอยู่ และ publish ผ่าน RabbitMQ (pattern `fcm-push`, queue `RABBITMQ_FCM_QUEUE`) ให้ **FCM service ที่แยกเป็น microservice ต่างหาก** เป็นคน broadcast push notification ไปยัง FCM topic ของอุปกรณ์นั้น (`device_{serial}`) แบบยิงครั้งเดียว — โปรเจคนี้ทำหน้าที่แค่ publish message (`{ serial, notification: {title, body}, data }`) ไม่ยิง push เอง, การสร้างชื่อ topic และ broadcast จริงเป็นหน้าที่ของ FCM service ปลายทาง; mobile app เป็นฝั่ง subscribe topic เอง ไม่ใช่ให้ server วนส่งราย `fcmToken`/ราย user
 
 ## Prisma Schema
 
@@ -128,8 +127,8 @@ datasource db {
 }
 
 model Devices {
-  id           String               @id @default(uuid())
-  serial       String               @unique
+  id           String          @id @default(uuid())
+  serial       String          @unique
   ward         String
   hospital     String
   staticName   String
@@ -140,12 +139,11 @@ model Devices {
   remark       String?
   position     String?
   positionPic  String?
-  online       Boolean              @default(false)
+  online       Boolean         @default(false)
   log          LogDays[]
   notification Notifications[]
-  tokens       NotificationTokens[]
-  createAt     DateTime             @default(now())
-  updateAt     DateTime             @default(now()) @updatedAt
+  createAt     DateTime        @default(now())
+  updateAt     DateTime        @default(now()) @updatedAt
 }
 
 // time-series log จากอุปกรณ์ — แปลงเป็น TimescaleDB hypertable บน sendTime หลัง migrate
@@ -181,33 +179,19 @@ model Notifications {
   detail      String
   status      Boolean  @default(false)
   deliveredSse Boolean @default(false)  // ส่งผ่าน SSE สำเร็จหรือยัง
-  deliveredFcm Boolean @default(false)  // ส่งผ่าน FCM สำเร็จหรือยัง
+  deliveredFcm Boolean @default(false)  // publish เข้า RabbitMQ (queue fcm-push) ให้ FCM service แยกต่างหากสำเร็จหรือยัง — ไม่ใช่การยืนยันว่า mobile ได้รับ push จริง
   device      Devices  @relation(fields: [serial], references: [serial])
   createAt    DateTime @default(now())
   updateAt    DateTime @default(now()) @updatedAt
 
   @@index([serial, createAt])
 }
-
-// เก็บ FCM token ของ mobile app ต่ออุปกรณ์/ผู้ใช้ ไม่มีใน smtrack-log ต้นแบบ (ต้นแบบไม่มี push notification)
-model NotificationTokens {
-  id       String   @id @default(uuid())
-  serial   String
-  userId   String
-  fcmToken String   @unique
-  platform String   // ios | android | web
-  device   Devices  @relation(fields: [serial], references: [serial])
-  createAt DateTime @default(now())
-  updateAt DateTime @default(now()) @updatedAt
-
-  @@index([serial])
-}
 ```
 
 - `LogDays` ทำ hypertable บน `sendTime` — query ร่วมกับ metadata ใน `Devices` ได้ใน SQL เดียวผ่าน Prisma โดยไม่ต้องพึ่ง time-series DB แยกระบบ
   - ตั้ง retention policy / continuous aggregate ของ TimescaleDB สำหรับสรุปข้อมูลรายวัน (โมดูล `logday`/`graph`) แทนการเขียน cron aggregate เอง
 - `Notifications` เพิ่ม `deliveredSse`/`deliveredFcm` เพื่อ track ว่าส่งแจ้งเตือนออกไปแต่ละช่องทางสำเร็จหรือยัง (ต้นแบบ smtrack-log มีแค่ `status` เดียว)
-- `NotificationTokens` เก็บ mapping `fcmToken` ต่อ `serial`/`userId` — โมดูล `mobile` เป็นจุดลงทะเบียน/ลบ token เมื่อ login/logout หรือ token หมดอายุ และเป็นจุดที่ server สั่ง `subscribeToTopic`/`unsubscribeFromTopic` ให้ token นั้นเข้า/ออกจาก FCM topic `device_{serial}` (เพราะ notification ส่งแบบ broadcast ไป topic ไม่ได้ยิงราย token)
+- โปรเจคนี้ไม่มี model สำหรับเก็บ FCM token (`NotificationTokens`) — การจัดการ token/subscribe-unsubscribe topic เป็นความรับผิดชอบของ FCM service แยกต่างหาก ไม่ใช่ backend นี้
 - เพิ่ม `@@index` ให้ครบกับ field ที่ใช้ query บ่อย (serial, sendTime/createAt)
 - รัน `npx prisma migrate dev` ทุกครั้งที่แก้ schema และ commit ไฟล์ migration เข้า repo เสมอ ห้ามแก้ migration ที่ apply ไปแล้วย้อนหลัง (คำสั่ง `create_hypertable` ให้ต่อท้ายไว้ใน migration SQL หลังจาก Prisma สร้างตารางแล้ว)
 
@@ -216,11 +200,11 @@ model NotificationTokens {
 - ใช้ DTO + `class-validator` กับทุก input ทั้งจาก MQTT payload และ REST body
 - Service layer ห้าม inject `PrismaClient` ตรง ๆ ให้ผ่าน `PrismaService` ที่ extend `PrismaClient` และจัดการ connection lifecycle
 - แยก MQTT message handler (`@MessagePattern`/`@EventPattern`) ออกจาก business logic เสมอ — handler ทำหน้าที่รับ/แปลง payload (ทั้ง telemetry, log, notification) แล้วเรียก service เท่านั้น
-- การเก็บ log และการแจ้งเตือนไปยังอุปกรณ์/บริการอื่นให้เดินผ่าน MQTT publish เท่านั้น ห้ามใช้ HTTP call (REST client ภายใน/webhook) สำหรับ flow เหล่านี้ เพื่อลด coupling และได้ retry/QoS ของ MQTT มาฟรี
+- การเก็บ log และการแจ้งเตือนไปยังอุปกรณ์ให้เดินผ่าน MQTT publish เท่านั้น ห้ามใช้ HTTP call (REST client ภายใน/webhook) สำหรับ flow เหล่านี้ เพื่อลด coupling และได้ retry/QoS ของ MQTT มาฟรี — การส่งข้อมูลไปยัง FCM service แยกต่างหาก (service-to-service ภายใน ไม่ใช่การสื่อสารกับอุปกรณ์) ให้เดินผ่าน RabbitMQ publish เท่านั้นเช่นกัน ห้ามใช้ HTTP call ด้วยเหตุผลเดียวกัน
 - ใช้ `EventEmitter2` หรือ NestJS internal events เมื่อต้องกระจายข้อมูล telemetry/log/notification ใหม่ไปยังหลาย consumer ภายในโปรเซสเดียวกัน (เช่น โมดูล `sse` สำหรับ push ไปยัง real-time dashboard)
 - Real-time ไปยัง client ให้ใช้ SSE เท่านั้น: ใช้ `@Sse()` decorator คืนค่า `Observable<MessageEvent>` ต่อ endpoint (เช่น `GET /telemetry/stream`, `GET /notifications/stream`) โดยภายในโมดูล `sse` ใช้ RxJS `Subject`/`ReplaySubject` รับ event จาก `EventEmitter2` แล้ว multicast ออกไป — ไม่เปิด WebSocket gateway ในโปรเจคนี้
-- Notification ต้อง fan-out ผ่าน 2 ช่องทางเสมอเมื่อสร้างเสร็จ: เรียก `sse.service` เพื่อ broadcast ให้ client ที่เปิด stream ค้างอยู่ และเรียก `fcm.service` เพื่อ **broadcast ไป FCM topic `device_{serial}` ครั้งเดียว** (ไม่วนส่งราย `fcmToken`) — สองช่องทางนี้เป็นคนละ concern กัน (SSE = client กำลังเปิดอยู่, FCM = ปลุกแอปที่ปิดอยู่) อย่าเขียนให้ทางใดทางหนึ่งพังแล้วบล็อกอีกทาง (wrap แต่ละ call ด้วย try/catch แยกกัน) แล้วอัปเดต `deliveredSse`/`deliveredFcm` ตามผลจริง
-- เพราะ notification ส่งแบบ broadcast ไป topic การส่ง notification จึงไม่ต้องจัดการ token invalid ราย token — การ subscribe/unsubscribe token เข้า/ออก topic และการลบ token ที่ FCM คืน error ตอน `subscribeToTopic` เป็นหน้าที่ของโมดูล `mobile` ตอน register/unregister ไม่ใช่ตอนสร้าง notification
+- Notification ต้อง fan-out ผ่าน 2 ช่องทางเสมอเมื่อสร้างเสร็จ: เรียก `sse.service` เพื่อ broadcast ให้ client ที่เปิด stream ค้างอยู่ และเรียก `rabbitmq.service.emit()` เพื่อ **publish message pattern `fcm-push`** (payload `{ serial, notification: {title, body}, data }`) เข้าคิว `RABBITMQ_FCM_QUEUE` ให้ FCM service แยกต่างหากไป broadcast ต่อ (ไม่ยิง push เอง, ไม่วนส่งราย `fcmToken`) — สองช่องทางนี้เป็นคนละ concern กัน (SSE = client กำลังเปิดอยู่, FCM = ปลุกแอปที่ปิดอยู่) อย่าเขียนให้ทางใดทางหนึ่งพังแล้วบล็อกอีกทาง (wrap แต่ละ call ด้วย try/catch แยกกัน) แล้วอัปเดต `deliveredSse`/`deliveredFcm` ตามผลจริง (`deliveredFcm=true` หมายถึง publish เข้าคิวสำเร็จ ไม่ใช่ FCM ส่งถึงมือถือจริง)
+- การสร้าง/ลบ FCM token, การ subscribe/unsubscribe token เข้า/ออก topic, และ retry/reconnect ไปยัง Firebase ทั้งหมดเป็นความรับผิดชอบของ FCM service แยกต่างหาก ไม่ใช่ backend นี้ — โปรเจคนี้ไม่มี dependency ของ `firebase-admin`
 - Error handling: ใช้ custom exception filter จับ error จาก MQTT handler แยกจาก HTTP exception filter (MQTT ไม่มี HTTP response ให้ throw กลับ)
 - ตั้งชื่อไฟล์/คลาสตามธรรมเนียม NestJS: `*.module.ts`, `*.service.ts`, `*.controller.ts`, `*.dto.ts`
 
@@ -238,10 +222,8 @@ REDIS_URL=redis://localhost:6379
 RABBITMQ_URL=amqp://user:pass@localhost:5672
 RABBITMQ_DEVICE_ONLINE_QUEUE=device_online_queue
 RABBITMQ_LOG_QUEUE=log_queue
+RABBITMQ_FCM_QUEUE=fcm_notification_queue   # publish ไปให้ FCM service แยกต่างหาก consume
 JWT_SECRET=
-FIREBASE_PROJECT_ID=
-FIREBASE_CLIENT_EMAIL=
-FIREBASE_PRIVATE_KEY=
 PORT=3000
 ```
 
@@ -271,7 +253,8 @@ npm run format
 - Integration test: ใช้ test database จริง (แยกจาก dev, เปิด TimescaleDB extension ด้วย) รัน migration ก่อนเทส แล้ว teardown หลังเทส
 - ทดสอบ MQTT flow (ทั้ง ingest log และ publish notification) ด้วย broker แบบ in-memory/test broker (เช่น Aedes) แทนการต่อ broker จริง
 - ทดสอบ SSE endpoint ด้วยการ subscribe `Observable` ที่คืนจาก service โดยตรงในระดับ unit test และยิง HTTP request ค้าง connection ทดสอบใน e2e test
-- Unit test โมดูล `fcm`: mock `firebase-admin` (`admin.messaging()`), ห้ามยิง push จริงในเทส และครอบคลุม case: broadcast ไป topic `device_{serial}` ครั้งเดียว (ยืนยันว่าเรียก `send({ topic, ... })` ไม่วนราย token), sanitize ชื่อ topic, ส่งล้มเหลวคืน `sent=false` ไม่ throw, และกรณี Firebase ไม่ init ต้องข้าม
+- e2e ส่วนใหญ่ mock `RabbitmqService` (ทั้ง publish leg สำหรับ `fcm-push` และไม่ต้องต่อ broker จริง) — มีชุด e2e แยกที่ต่อ broker จริงสำหรับพิสูจน์ทั้งฝั่ง consume (`test/rmq-consumer.e2e-spec.ts`) และฝั่ง publish (`test/rmq-fcm-publish.e2e-spec.ts`) โดยใช้ queue เฉพาะของเทส (เช่น `..._e2e`) ผ่าน `RABBITMQ_LOG_QUEUE`/`RABBITMQ_FCM_QUEUE` ก่อนเรียก `createTestApp()` แล้วลบ queue ทิ้งใน `afterAll` กันค้างสะสมบน broker ที่ใช้ร่วมกัน
+- ไม่มี unit test สำหรับ FCM push จริงในโปรเจคนี้อีกต่อไป (ย้ายไปอยู่ที่ FCM service แยกต่างหาก) — ฝั่งนี้ทดสอบแค่ว่า publish message ผ่าน RabbitMQ ถูกต้อง (pattern, queue, payload shape) ไม่ mock/ยิง Firebase
 
 ## ข้อควรระวัง
 

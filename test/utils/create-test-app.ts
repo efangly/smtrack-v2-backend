@@ -7,7 +7,7 @@ import { HttpExceptionFilter } from '../../src/common/filters/http-exception.fil
 import { ResponseInterceptor } from '../../src/common/interceptors/response.interceptor';
 import { RedisService } from '../../src/redis/redis.service';
 import { MqttClientService } from '../../src/mqtt/mqtt-client.service';
-import { FcmService } from '../../src/fcm/fcm.service';
+import { RabbitmqService } from '../../src/rabbitmq/rabbitmq.service';
 import { ObjectStorageService } from '../../src/backup/object-storage.service';
 import { FirmwareStorageService } from '../../src/firmware/firmware-storage.service';
 
@@ -97,7 +97,7 @@ export function unwrap<T = any>(body: { data: T }): T {
 
 export interface TestAppMocks {
   mqtt: { publish: jest.Mock; publishNotification: jest.Mock; publishCommand: jest.Mock };
-  fcm: { pushToSerial: jest.Mock };
+  rabbitmq: { emit: jest.Mock };
 }
 
 export interface TestAppContext {
@@ -106,35 +106,44 @@ export interface TestAppContext {
   mocks: TestAppMocks;
 }
 
+export interface CreateTestAppOptions {
+  /**
+   * ปล่อยให้ RabbitmqService ต่อ broker จริง (ไม่ override ด้วย mock)
+   * ใช้เฉพาะเทสที่ตั้งใจทดสอบ publish ผ่าน RabbitMQ จริง เช่น test/rmq-fcm-publish.e2e-spec.ts
+   */
+  realRabbitmq?: boolean;
+}
+
 /**
  * สร้าง Nest app สำหรับ e2e โดย override external dependency ทั้งหมด
- * (Redis / MQTT / FCM / S3) — เทสชุดนี้โฟกัส HTTP + DB + SSE ตามที่ตกลงไว้
+ * (Redis / MQTT / RabbitMQ / S3) — เทสชุดนี้โฟกัส HTTP + DB + SSE ตามที่ตกลงไว้
  *
- * ไม่เรียก connectMicroservice/startAllMicroservices เพราะไม่มี MQTT broker ให้ต่อ
+ * ไม่เรียก connectMicroservice/startAllMicroservices เพราะไม่มี MQTT/RabbitMQ broker ให้ต่อ
+ * (ยกเว้นเทสที่เปิด microservice เองเพิ่มเติม เช่น rmq-consumer.e2e-spec.ts)
  */
-export async function createTestApp(): Promise<TestAppContext> {
+export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestAppContext> {
   const mocks: TestAppMocks = {
     mqtt: {
       publish: jest.fn().mockResolvedValue(undefined),
       publishNotification: jest.fn().mockResolvedValue(undefined),
       publishCommand: jest.fn().mockResolvedValue(undefined),
     },
-    fcm: {
-      pushToSerial: jest
-        .fn()
-        .mockImplementation((serial: string) =>
-          Promise.resolve({ topic: `device_${serial}`, sent: true, messageId: 'test-message-id' }),
-        ),
+    rabbitmq: {
+      emit: jest.fn().mockResolvedValue(undefined),
     },
   };
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+  let builder = Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(RedisService)
     .useClass(InMemoryRedisStub)
     .overrideProvider(MqttClientService)
-    .useValue(mocks.mqtt)
-    .overrideProvider(FcmService)
-    .useValue(mocks.fcm)
+    .useValue(mocks.mqtt);
+
+  if (!options.realRabbitmq) {
+    builder = builder.overrideProvider(RabbitmqService).useValue(mocks.rabbitmq);
+  }
+
+  const moduleRef = await builder
     .overrideProvider(ObjectStorageService)
     .useValue({
       putObject: jest.fn().mockResolvedValue(undefined),
