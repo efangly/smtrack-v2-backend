@@ -15,14 +15,10 @@ export interface AppConfig {
   rabbitmq: {
     deviceOnlineQueue: string;
     logQueue: string;
+    fcmQueue: string;
   };
   jwtSecret: string;
   deviceSecret: string;
-  firebase: {
-    projectId: string;
-    clientEmail: string;
-    privateKey: string;
-  };
   archive: {
     retentionMonths: number;
     s3: {
@@ -85,15 +81,10 @@ export default (): AppConfig => ({
   rabbitmq: {
     deviceOnlineQueue: process.env.RABBITMQ_DEVICE_ONLINE_QUEUE ?? 'device_online_queue',
     logQueue: process.env.RABBITMQ_LOG_QUEUE ?? 'log_queue',
+    fcmQueue: process.env.RABBITMQ_FCM_QUEUE ?? 'fcm_notification_queue',
   },
   jwtSecret: process.env.JWT_SECRET ?? '',
   deviceSecret: process.env.DEVICE_SECRET ?? '',
-  firebase: {
-    projectId: process.env.FIREBASE_PROJECT_ID ?? '',
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? '',
-    // env stores the key with literal \n — restore real newlines
-    privateKey: (process.env.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-  },
   archive: {
     retentionMonths: parseInt(process.env.ARCHIVE_RETENTION_MONTHS ?? '6', 10),
     s3: {

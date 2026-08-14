@@ -28,3 +28,19 @@ export const buildRmqLogOptions = (config: ConfigService): RmqOptions => ({
     noAck: false,
   },
 });
+
+/** message pattern ที่ฝั่ง FCM service (แยกต่างหาก) ต้อง @EventPattern ให้ตรงกัน */
+export const FCM_PUSH_PATTERN = 'fcm-push';
+
+/**
+ * Client options สำหรับ publish ข้อมูล push notification ไปยัง FCM service แยกต่างหาก
+ * โปรเจคนี้เป็นฝั่ง producer เท่านั้น — service ที่ consume queue นี้แล้วยิง push จริงอยู่นอกโปรเจค
+ */
+export const buildRmqFcmClientOptions = (config: ConfigService): RmqOptions => ({
+  transport: Transport.RMQ,
+  options: {
+    urls: [config.get<string>('rabbitmqUrl') ?? 'amqp://localhost:5672'],
+    queue: config.get<string>('rabbitmq.fcmQueue') ?? 'fcm_notification_queue',
+    queueOptions: { durable: true },
+  },
+});

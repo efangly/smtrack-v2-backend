@@ -12,7 +12,6 @@ import { RabbitmqModule } from './rabbitmq/rabbitmq.module';
 import { SseModule } from './sse/sse.module';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { MqttModule } from './mqtt/mqtt.module';
-import { FcmModule } from './fcm/fcm.module';
 import { NotificationModule } from './notification/notification.module';
 import { DeviceModule } from './device/device.module';
 import { AdjustModule } from './adjust/adjust.module';
@@ -54,7 +53,6 @@ import { MobileModule } from './mobile/mobile.module';
     SseModule,
     TelemetryModule,
     MqttModule,
-    FcmModule,
     NotificationModule,
     DeviceModule,
     AdjustModule,
