@@ -101,14 +101,24 @@ describe('DeviceService — device.changed event', () => {
   });
 
   it('update ส่ง actor เข้า event device.changed ให้ audit ตามได้ว่าใครแก้ไข', async () => {
-    prisma.devices.update.mockResolvedValue(device);
+    prisma.devices.findUnique.mockResolvedValue({ ...device, ward: 'OLD-WARD' });
+    prisma.devices.update.mockResolvedValue({ ...device, ward: 'NEW-WARD' });
 
-    await service.update('SN-1', {} as never, undefined, actor);
+    await service.update('SN-1', { ward: 'NEW-WARD' } as never, undefined, actor);
 
     const [name, payload] = emitter.emit.mock.calls[0] as [string, DeviceChangedEvent];
     expect(name).toBe(AppEvents.DEVICE_CHANGED);
     expect(payload.action).toBe('updated');
     expect(payload.actor).toEqual(actor);
+  });
+
+  it('update ข้าม emit เมื่อไม่มี field ไหนเปลี่ยนจริง (dto ซ้ำของเดิม)', async () => {
+    prisma.devices.findUnique.mockResolvedValue(device);
+    prisma.devices.update.mockResolvedValue(device);
+
+    await service.update('SN-1', {} as never, undefined, actor);
+
+    expect(emitter.emit).not.toHaveBeenCalled();
   });
 
   it('setOnline emit device.changed พร้อม device ทั้งก้อน เมื่อสถานะเปลี่ยนจริง', async () => {

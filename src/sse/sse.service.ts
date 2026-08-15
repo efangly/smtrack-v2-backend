@@ -1,6 +1,6 @@
-import { Injectable, Logger, MessageEvent } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, MessageEvent } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { Observable, Subject, defer } from 'rxjs';
+import { Observable, Subject, concat, defer } from 'rxjs';
 import { filter, finalize, map } from 'rxjs/operators';
 import { isWardScoped } from '../common/auth/ward-scope';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
@@ -8,6 +8,14 @@ import { AppEvents } from '../common/events/app-events';
 import { DeviceChangedEvent } from '../common/events/device-changed.event';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { MetricsService } from '../observability/metrics.service';
+import { PrismaService } from '../prisma/prisma.service';
+
+interface RealtimeReading {
+  serial: string;
+  channel: string;
+  temp: number;
+  sendTime: Date;
+}
 
 export const SSE_CHANNELS = ['telemetry', 'notification', 'device'] as const;
 export type SseChannel = (typeof SSE_CHANNELS)[number];
@@ -23,10 +31,13 @@ interface StreamEnvelope {
 export class SseService {
   private readonly logger = new Logger(SseService.name);
   private readonly stream$ = new Subject<StreamEnvelope>();
+  /** stream แยกจาก stream$ เพราะ scope เป็นราย serial+channel ไม่ใช่ ward-scoped channel ทั่วไป */
+  private readonly realtime$ = new Subject<RealtimeReading>();
 
   constructor(
     private readonly metrics: MetricsService,
     private readonly assignments: DeviceAssignmentService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /** broadcast ข้อมูลเข้า stream กลาง — ใช้ได้ทั้งจาก event handler และ service อื่นโดยตรง */
@@ -76,6 +87,55 @@ export class SseService {
   }
 
   /**
+   * stream อุณหภูมิ realtime (~5s, ไม่บันทึก DB) ของอุปกรณ์+channel เดียว — ใช้ชั่วคราวตอน
+   * ปรับค่าชดเชยเท่านั้น ไม่ใช่ dashboard monitoring ทั่วไป (ดู CLAUDE.md ส่วน adjust)
+   *
+   * emit ค่าล่าสุดจาก DB ทันที 1 ครั้งก่อน (กันจอว่างถ้าอุปกรณ์ยังไม่ส่ง live event ใหม่มา)
+   * แล้วต่อด้วย live stream ที่ filter เฉพาะ serial+channel นี้ — ไม่มีการ subscribe/unsubscribe
+   * MQTT จริง เพราะฝั่งอุปกรณ์ publish topic นี้อยู่แล้วตลอดเวลาไม่ว่าจะมีคนดูหรือไม่
+   * cleanup ตอน client disconnect เกิดจาก finalize() ของ live$ เท่านั้น (แค่เลิก filter ฝั่งนี้)
+   */
+  async realtimeTemperatureStream(
+    serial: string,
+    channel: string,
+    user: JwtPayloadDto,
+  ): Promise<Observable<MessageEvent>> {
+    if (isWardScoped(user)) {
+      const ward = await this.wardOf(serial);
+      if (ward !== user.wardId) {
+        throw new ForbiddenException(`ไม่มีสิทธิ์ดู realtime ของอุปกรณ์ ${serial}`);
+      }
+    }
+
+    const metricLabel = `realtime:${serial}:${channel}`;
+
+    const initial$ = defer(() => this.lastKnownReading(serial, channel)).pipe(
+      filter((reading): reading is RealtimeReading => reading !== null),
+      map((reading): MessageEvent => ({ type: 'temperature', data: reading })),
+    );
+
+    const live$ = defer(() => {
+      this.metrics.sseConnectionOpened(metricLabel);
+      return this.realtime$.asObservable();
+    }).pipe(
+      filter((reading) => reading.serial === serial && reading.channel === channel),
+      map((reading): MessageEvent => ({ type: 'temperature', data: reading })),
+      finalize(() => this.metrics.sseConnectionClosed(metricLabel)),
+    );
+
+    return concat(initial$, live$);
+  }
+
+  private async lastKnownReading(serial: string, channel: string): Promise<RealtimeReading | null> {
+    const row = await this.prisma.logDays.findFirst({
+      where: { serial, probe: channel },
+      orderBy: { sendTime: 'desc' },
+      select: { temp: true, sendTime: true },
+    });
+    return row ? { serial, channel, temp: row.temp, sendTime: row.sendTime } : null;
+  }
+
+  /**
    * หา ward ของ event ที่มีแค่ serial (telemetry/notification) — อ่านผ่าน cache ของ
    * DeviceAssignmentService จึงเป็น Redis hit เกือบทุกครั้ง ไม่ใช่ query ต่อ event
    */
@@ -93,6 +153,11 @@ export class SseService {
   async handleTelemetryCreated(payload: unknown): Promise<void> {
     const ward = await this.wardOf((payload as { serial?: unknown })?.serial);
     this.broadcast('telemetry', payload, ward);
+  }
+
+  @OnEvent(AppEvents.TELEMETRY_REALTIME)
+  handleTelemetryRealtime(payload: RealtimeReading): void {
+    this.realtime$.next(payload);
   }
 
   @OnEvent(AppEvents.DEVICE_CHANGED)

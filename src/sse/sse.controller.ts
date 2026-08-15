@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   MessageEvent,
+  Param,
   Query,
   Req,
   Sse,
@@ -61,6 +62,23 @@ export class SseController {
   @SkipInterceptor()
   deviceStream(@Req() req: AuthedRequest): Observable<MessageEvent> {
     return this.withHeartbeat(this.sseService.streamFor('device', req.user));
+  }
+
+  /**
+   * อุณหภูมิ realtime (~5s, ไม่บันทึก DB) ของอุปกรณ์+channel เดียว — ใช้ชั่วคราวตอน frontend
+   * เปิดหน้าปรับค่าชดเชยเท่านั้น ปิดหน้าจอ/ปิด connection ก็เลิก filter ทันที ไม่ใช่ dashboard
+   * monitoring ทั่วไป (นั้นใช้ `telemetry/stream` แทน)
+   */
+  @Sse('telemetry/:serial/:channel/stream')
+  @SkipInterceptor()
+  async realtimeTemperatureStream(
+    @Req() req: AuthedRequest,
+    @Param('serial') serial: string,
+    @Param('channel') channel: string,
+  ): Promise<Observable<MessageEvent>> {
+    return this.withHeartbeat(
+      await this.sseService.realtimeTemperatureStream(serial, channel, req.user),
+    );
   }
 
   /**

@@ -4,6 +4,8 @@
  */
 export const AppEvents = {
   TELEMETRY_CREATED: 'telemetry.created',
+  /** จาก topic realtime (~5s, ไม่บันทึก DB) — ใช้แค่ push ต่อให้ sse module ระหว่างปรับค่าชดเชย */
+  TELEMETRY_REALTIME: 'telemetry.realtime',
   DEVICE_CHANGED: 'device.changed',
   PROBE_CHANGED: 'probe.changed',
   CONFIG_CHANGED: 'config.changed',

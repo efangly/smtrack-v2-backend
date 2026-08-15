@@ -60,7 +60,7 @@ describe('AuditService', () => {
     expect(call.data.actorRole).toBeUndefined();
   });
 
-  it('findByDevice คืนประวัติเรียงจากใหม่ไปเก่า พร้อม pagination meta', async () => {
+  it('findByDevice คืนประวัติเรียงจากใหม่ไปเก่า พร้อม pagination meta และดึงเกิน 1 แถวไว้ทำ diff', async () => {
     prisma.deviceAudit.findMany.mockResolvedValue([]);
     prisma.deviceAudit.count.mockResolvedValue(0);
 
@@ -70,9 +70,59 @@ describe('AuditService', () => {
       where: { deviceId: 'dev-1' },
       orderBy: { createAt: 'desc' },
       skip: 0,
-      take: 50,
+      take: 51,
     });
     expect(prisma.deviceAudit.count).toHaveBeenCalledWith({ where: { deviceId: 'dev-1' } });
     expect(result.meta).toEqual({ page: 1, limit: 50, total: 0, totalPages: 0 });
+  });
+
+  it('findByDevice คำนวณ diff จาก snapshot ของแถวก่อนหน้า และไม่คืน snapshot ดิบ', async () => {
+    prisma.deviceAudit.findMany.mockResolvedValue([
+      {
+        id: 'audit-2',
+        deviceId: 'dev-1',
+        action: 'swapped',
+        createAt: new Date('2026-08-15'),
+        snapshot: { id: 'dev-1', serial: 'NEW-001', ward: 'ICU', updateAt: '2026-08-15' },
+      },
+      {
+        id: 'audit-1',
+        deviceId: 'dev-1',
+        action: 'created',
+        createAt: new Date('2026-08-01'),
+        snapshot: { id: 'dev-1', serial: 'OLD-001', ward: 'ICU', updateAt: '2026-08-01' },
+      },
+    ]);
+    prisma.deviceAudit.count.mockResolvedValue(2);
+
+    const result = await service.findByDevice('dev-1', { page: 1, limit: 1 });
+
+    expect(result.data).toEqual([
+      {
+        id: 'audit-2',
+        deviceId: 'dev-1',
+        action: 'swapped',
+        createAt: new Date('2026-08-15'),
+        diff: { serial: { from: 'OLD-001', to: 'NEW-001' } },
+      },
+    ]);
+  });
+
+  it('findByDevice ให้ diff เป็น null สำหรับแถว created', async () => {
+    prisma.deviceAudit.findMany.mockResolvedValue([
+      {
+        id: 'audit-1',
+        deviceId: 'dev-1',
+        action: 'created',
+        createAt: new Date('2026-08-01'),
+        snapshot: { id: 'dev-1', serial: 'OLD-001' },
+      },
+    ]);
+    prisma.deviceAudit.count.mockResolvedValue(1);
+
+    const result = await service.findByDevice('dev-1', { page: 1, limit: 50 });
+
+    expect(result.data[0].diff).toBeNull();
+    expect(result.data[0]).not.toHaveProperty('snapshot');
   });
 });

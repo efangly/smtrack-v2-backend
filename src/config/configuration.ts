@@ -8,6 +8,8 @@ export interface AppConfig {
     password?: string;
     clientId: string;
     logTopic: string;
+    /** topic realtime ~5s ไม่บันทึก DB — ใช้แค่ push ให้ sse ตอนปรับค่าชดเชย ยังไม่ได้ตกลง topic จริงกับฝั่ง firmware */
+    realtimeTopic: string;
     notificationTopicPrefix: string;
   };
   redisUrl: string;
@@ -74,6 +76,8 @@ export default (): AppConfig => ({
     password: process.env.MQTT_PASSWORD || undefined,
     clientId: process.env.MQTT_CLIENT_ID ?? 'nestjs-iot-service',
     logTopic: process.env.MQTT_LOG_TOPIC ?? 'devices/+/log',
+    // TODO: กรอก topic จริงตามที่ตกลงกับฝั่ง firmware — ค่า default เป็นแค่ placeholder ตาม convention เดิม
+    realtimeTopic: process.env.MQTT_REALTIME_TOPIC ?? 'devices/+/telemetry',
     notificationTopicPrefix: process.env.MQTT_NOTIFICATION_TOPIC_PREFIX ?? 'notification',
   },
   redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',

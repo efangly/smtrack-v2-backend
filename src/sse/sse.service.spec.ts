@@ -1,4 +1,4 @@
-import { MessageEvent } from '@nestjs/common';
+import { ForbiddenException, MessageEvent } from '@nestjs/common';
 import { take, toArray } from 'rxjs/operators';
 import { firstValueFrom } from 'rxjs';
 import { SseService } from './sse.service';
@@ -6,6 +6,7 @@ import { JwtPayloadDto } from '../common/dto/payload.dto';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { MetricsService } from '../observability/metrics.service';
 import { createMetricsMock } from '../observability/testing';
+import { PrismaService } from '../prisma/prisma.service';
 
 const userIn = (role: string, wardId = 'OPD'): JwtPayloadDto => ({
   id: 'u1',
@@ -23,11 +24,17 @@ describe('SseService', () => {
   let service: SseService;
   let metrics: jest.Mocked<MetricsService>;
   let assignments: { resolveWard: jest.Mock };
+  let prisma: { logDays: { findFirst: jest.Mock } };
 
   beforeEach(() => {
     metrics = createMetricsMock();
     assignments = { resolveWard: jest.fn().mockResolvedValue('OPD') };
-    service = new SseService(metrics, assignments as unknown as DeviceAssignmentService);
+    prisma = { logDays: { findFirst: jest.fn().mockResolvedValue(null) } };
+    service = new SseService(
+      metrics,
+      assignments as unknown as DeviceAssignmentService,
+      prisma as unknown as PrismaService,
+    );
   });
 
   it('subscribe stream แล้วได้รับเฉพาะ event ของ channel ที่ระบุ', async () => {
@@ -132,5 +139,79 @@ describe('SseService', () => {
 
     sub.unsubscribe();
     expect(metrics.sseConnectionClosed).toHaveBeenCalledWith('telemetry');
+  });
+
+  describe('realtimeTemperatureStream', () => {
+    /** defer(Promise) resolve ผ่าน microtask หลายชั้น — flush ด้วย macrotask boundary ให้ชัวร์ */
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+    it('emit ค่าล่าสุดจาก DB ก่อน แล้วตามด้วย live event ที่ filter ตาม serial+channel', async () => {
+      prisma.logDays.findFirst.mockResolvedValue({ temp: 20, sendTime: new Date('2026-01-01') });
+
+      const obs = await service.realtimeTemperatureStream('SN-1', '2', SUPER);
+      const events: MessageEvent[] = [];
+      const sub = obs.subscribe((e) => events.push(e));
+      await flush();
+
+      // event ของ serial/channel อื่นต้องถูก filter ทิ้ง ก่อน event ที่ตรงจริง
+      service.handleTelemetryRealtime({
+        serial: 'SN-1',
+        channel: '1',
+        temp: 99,
+        sendTime: new Date(),
+      });
+      service.handleTelemetryRealtime({
+        serial: 'SN-2',
+        channel: '2',
+        temp: 99,
+        sendTime: new Date(),
+      });
+      service.handleTelemetryRealtime({
+        serial: 'SN-1',
+        channel: '2',
+        temp: 25.5,
+        sendTime: new Date(),
+      });
+      sub.unsubscribe();
+
+      expect(prisma.logDays.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { serial: 'SN-1', probe: '2' } }),
+      );
+      expect(events[0].data).toMatchObject({ temp: 20 });
+      expect(events[1].data).toMatchObject({ serial: 'SN-1', channel: '2', temp: 25.5 });
+    });
+
+    it('ไม่ emit snapshot เริ่มต้นถ้าไม่มี log เก่าใน DB', async () => {
+      prisma.logDays.findFirst.mockResolvedValue(null);
+      const obs = await service.realtimeTemperatureStream('SN-1', '1', SUPER);
+      const events: MessageEvent[] = [];
+      const sub = obs.subscribe((e) => events.push(e));
+      await flush();
+
+      service.handleTelemetryRealtime({
+        serial: 'SN-1',
+        channel: '1',
+        temp: 30,
+        sendTime: new Date(),
+      });
+      sub.unsubscribe();
+
+      expect(events).toHaveLength(1);
+      expect(events[0].data).toMatchObject({ temp: 30 });
+    });
+
+    it('role ที่ถูก scope และไม่ใช่ ward ของอุปกรณ์ถูกปฏิเสธ', async () => {
+      assignments.resolveWard.mockResolvedValue('ICU');
+      await expect(service.realtimeTemperatureStream('SN-1', '1', WARD_USER)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('role ที่ถูก scope และตรง ward ของอุปกรณ์เข้าถึงได้', async () => {
+      assignments.resolveWard.mockResolvedValue('OPD');
+      await expect(
+        service.realtimeTemperatureStream('SN-1', '1', WARD_USER),
+      ).resolves.toBeDefined();
+    });
   });
 });
