@@ -13,6 +13,7 @@ import { ConfigChangeAction, buildConfigChangedEvent } from '../common/events/co
 import { ProbeChangeAction, buildProbeChangedEvent } from '../common/events/probe-changed.event';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
+import { computeSnapshotDiff } from '../audit/audit-diff.util';
 import { DeviceAssignmentService } from './device-assignment.service';
 import { DeviceImageStorageService } from './device-image-storage.service';
 import { CreateDeviceDto } from './dto/create-device.dto';
@@ -243,14 +244,16 @@ export class DeviceService {
     const { serial: _unusedSerial, firmware, installDate, ...deviceFields } = dto;
     void _unusedSerial;
 
-    let previousPositionPic: string | null = null;
-    let positionPic: string | undefined;
-    if (file) {
-      previousPositionPic =
-        (await this.prisma.devices.findUnique({ where: { serial }, select: { positionPic: true } }))
-          ?.positionPic ?? null;
-      positionPic = await this.uploadImage(serial, file);
+    // เก็บสถานะก่อนแก้ไว้เทียบหลัง write — ใช้ทั้งลบรูปเก่าและเช็คว่ามีอะไรเปลี่ยนจริงก่อน emit/audit
+    const before = await this.prisma.devices.findUnique({
+      where: { serial },
+      include: WITH_HARDWARE,
+    });
+    if (!before) {
+      throw new NotFoundException(`Device ${serial} not found`);
     }
+
+    const positionPic = file ? await this.uploadImage(serial, file) : undefined;
 
     let device: Devices;
     try {
@@ -275,11 +278,19 @@ export class DeviceService {
     // client ward เดิมจะยังเห็น event ของเครื่องที่ย้ายออกไปแล้วจนกว่า TTL จะหมด
     await this.assignments.invalidate(serial);
 
-    if (previousPositionPic) {
-      await this.imageStorage.delete(previousPositionPic);
+    if (before.positionPic && before.positionPic !== device.positionPic) {
+      await this.imageStorage.delete(before.positionPic);
     }
 
-    this.emitChanged('updated', device, actor);
+    // PUT เรียกซ้ำด้วย payload เดิมได้บ่อย (เช่น form submit โดยไม่ได้แก้อะไร) — เทียบก่อน emit
+    // ไม่งั้น audit trail จะเต็มไปด้วยแถว 'updated' ที่ diff ว่างเปล่า ตรงกับ pattern ของ setOnline
+    const diff = computeSnapshotDiff(
+      JSON.parse(JSON.stringify(before)),
+      JSON.parse(JSON.stringify(device)),
+    );
+    if (Object.keys(diff).length > 0) {
+      this.emitChanged('updated', device, actor);
+    }
     return device;
   }
 }
