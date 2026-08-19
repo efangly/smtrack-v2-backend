@@ -25,6 +25,8 @@ npm-debug.log*
 .env.local
 .env.*.local
 observability/.env
+scripts/*.out.env
+scripts/minio-setup.env
 
 # Firebase
 firebase-service-account.json

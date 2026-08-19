@@ -39,14 +39,6 @@ x-app-env: &app-env
   OTEL_SERVICE_NAME: smtrack-backend
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
 
-# credential ของ MinIO ในเครือข่าย compose นี้ — reuse ตัวเดียวกับที่ app ใช้ export archive
-# (ARCHIVE_S3_ACCESS_KEY/SECRET_KEY ใน x-app-env) เพราะเป็น MinIO instance เดียวกัน — tempo/loki ต้องใช้ด้วย
-x-minio-env: &minio-env
-  MINIO_ENDPOINT: minio:9000
-  ARCHIVE_S3_ACCESS_KEY: minioadmin
-  ARCHIVE_S3_SECRET_KEY: minioadmin
-  ARCHIVE_S3_REGION: us-east-1
-
 services:
   # ── dependencies ────────────────────────────────────────────────────────────
   timescaledb:
@@ -167,11 +159,26 @@ services:
       - '4318:4318' # OTLP HTTP
       - '4317:4317' # OTLP gRPC
 
+  # full local stack ใช้ minioadmin (root) ตรง ๆ ทุกที่เพื่อความง่าย ไม่ผูกกับ scripts/minio-setup.sh
+  # (ต่างจาก dev/prod server จริงที่ observability/.env(.prod) ต้องตั้ง TEMPO_S3_*/LOKI_S3_*
+  # เป็น credential เฉพาะ bucket ที่สร้างด้วย scripts/minio-setup.sh) — override ตรงนี้เพื่อไม่ให้
+  # พึ่งค่าจาก .env ที่ root ซึ่งปกติเก็บ credential ของ dev server จริงไว้ (คนละ MinIO instance)
+  object-storage-init:
+    environment:
+      ARCHIVE_S3_ACCESS_KEY: minioadmin
+      ARCHIVE_S3_SECRET_KEY: minioadmin
+
   tempo:
     ports: ['3200:3200']
+    environment:
+      TEMPO_S3_ACCESS_KEY: minioadmin
+      TEMPO_S3_SECRET_KEY: minioadmin
 
   loki:
     ports: ['3100:3100']
+    environment:
+      LOKI_S3_ACCESS_KEY: minioadmin
+      LOKI_S3_SECRET_KEY: minioadmin
 
   prometheus:
     ports: ['9090:9090']

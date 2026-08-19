@@ -14,7 +14,7 @@ describe('TelemetryService', () => {
   let prisma: { logDays: { create: jest.Mock; findMany: jest.Mock; count: jest.Mock } };
   let emitter: { emit: jest.Mock };
   let metrics: jest.Mocked<MetricsService>;
-  let assignments: { resolveDeviceId: jest.Mock };
+  let assignments: { resolveDeviceId: jest.Mock; resolveDeviceIdOrThrow: jest.Mock };
   let probes: { resolveProbeId: jest.Mock };
 
   beforeEach(async () => {
@@ -22,7 +22,10 @@ describe('TelemetryService', () => {
     emitter = { emit: jest.fn() };
     metrics = createMetricsMock();
     // ค่า default: กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1
-    assignments = { resolveDeviceId: jest.fn().mockResolvedValue('dev-1') };
+    assignments = {
+      resolveDeviceId: jest.fn().mockResolvedValue('dev-1'),
+      resolveDeviceIdOrThrow: jest.fn().mockResolvedValue('dev-1'),
+    };
     probes = { resolveProbeId: jest.fn().mockResolvedValue('probe-1') };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -151,6 +154,27 @@ describe('TelemetryService', () => {
     const { where } = prisma.logDays.findMany.mock.calls[0][0];
     expect(where.probeId).toBe('probe-2');
     expect(where.probe).toBe('2');
+  });
+
+  it('find กรองด้วย serialOrName โดย resolve เป็น deviceId ผ่าน DeviceAssignmentService', async () => {
+    prisma.logDays.findMany.mockResolvedValue([]);
+    prisma.logDays.count.mockResolvedValue(0);
+    assignments.resolveDeviceIdOrThrow.mockResolvedValue('dev-2');
+
+    await service.find({ serialOrName: 'DEVICE-STATIC-NAME' });
+
+    expect(assignments.resolveDeviceIdOrThrow).toHaveBeenCalledWith('DEVICE-STATIC-NAME');
+    expect(prisma.logDays.findMany.mock.calls[0][0].where.deviceId).toBe('dev-2');
+  });
+
+  it('find ปฏิเสธเมื่อส่ง serialOrName พร้อมกับ serial หรือ deviceId', async () => {
+    await expect(service.find({ serialOrName: 'x', serial: 'SN-1' })).rejects.toThrow(
+      /ระบุ serial, deviceId หรือ serialOrName ได้เพียงอย่างเดียว/,
+    );
+    await expect(service.find({ serialOrName: 'x', deviceId: 'dev-1' })).rejects.toThrow(
+      /ระบุ serial, deviceId หรือ serialOrName ได้เพียงอย่างเดียว/,
+    );
+    expect(prisma.logDays.findMany).not.toHaveBeenCalled();
   });
 
   it('บันทึกเวลาที่ใช้ ingest เป็น metric', async () => {

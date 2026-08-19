@@ -23,6 +23,15 @@ export class QueryTelemetryDto extends PaginationQueryDto {
   @IsOptional()
   deviceId?: string;
 
+  /**
+   * รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง แล้ว resolve เป็น deviceId
+   * ให้เอง (เหมือน GraphController/LogdayController) — ใช้เมื่อผู้เรียกรู้แค่ staticName และ
+   * ต้องการประวัติต่อเนื่องข้ามการสลับเครื่อง แต่ไม่รู้ deviceId ภายใน
+   */
+  @IsString()
+  @IsOptional()
+  serialOrName?: string;
+
   /** กรองด้วย probe ตรง ๆ (Probes.id) — ใช้เมื่อรู้ probe อยู่แล้ว เช่นกดเจาะจากเส้นในกราฟ */
   @IsUUID()
   @IsOptional()

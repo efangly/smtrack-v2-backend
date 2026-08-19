@@ -35,6 +35,15 @@ service:
   telemetry:
     logs:
       level: info
+    # เปิด self-metrics endpoint ให้ prometheus scrape ได้ที่ otel-collector:8888
+    # (0.121.0 ไม่มี default address ให้แล้ว ต้องประกาศ readers เอง ไม่งั้น :8888 จะไม่เปิดเลย)
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
   pipelines:
     traces:
       receivers: [otlp]

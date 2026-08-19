@@ -21,20 +21,22 @@ networks:
     name: ${EXTERNAL_NETWORK:-proxy}
     external: true
 
-# credential ของ MinIO ที่มีอยู่แล้วบน dev server — reuse ตัวเดียวกับที่ app ใช้ export
-# archive (ARCHIVE_S3_ACCESS_KEY/SECRET_KEY) เพราะเป็น MinIO instance เดียวกัน
+# endpoint ของ MinIO ที่มีอยู่แล้วบน dev server — ตัวเดียวใช้ร่วมกันได้ (คนละ bucket/credential ต่อ service)
 x-minio-env: &minio-env
   MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
-  ARCHIVE_S3_ACCESS_KEY: ${ARCHIVE_S3_ACCESS_KEY}
-  ARCHIVE_S3_SECRET_KEY: ${ARCHIVE_S3_SECRET_KEY}
-  ARCHIVE_S3_REGION: ${ARCHIVE_S3_REGION:-us-east-1}
 
 services:
   # job แบบ one-shot: สร้าง bucket ของ tempo/loki บน MinIO เดิมให้พร้อมก่อน tempo/loki จะ start
+  # ต้องใช้ credential ระดับ admin/root (ARCHIVE_S3_ACCESS_KEY/SECRET_KEY) เพราะ mc mb ต้องการสิทธิ์
+  # s3:CreateBucket ซึ่ง policy แบบ least-privilege ต่อ bucket ของ tempo/loki (สร้างผ่าน
+  # scripts/minio-setup.sh) ไม่ได้ให้สิทธิ์นี้ไว้ — ตัว tempo/loki เองด้านล่างใช้ credential ของ
+  # ตัวเองที่ scope เฉพาะ bucket ตัวเอง ไม่ใช้ตัวนี้
   object-storage-init:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     environment:
       <<: *minio-env
+      ARCHIVE_S3_ACCESS_KEY: ${ARCHIVE_S3_ACCESS_KEY}
+      ARCHIVE_S3_SECRET_KEY: ${ARCHIVE_S3_SECRET_KEY}
       TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET:-tempo-traces}
       LOKI_S3_BUCKET: ${LOKI_S3_BUCKET:-loki-chunks}
     entrypoint: >
@@ -59,6 +61,11 @@ services:
     environment:
       <<: *minio-env
       TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET:-tempo-traces}
+      # credential เฉพาะของ tempo bucket (สร้างด้วย scripts/minio-setup.sh) — ไม่ share
+      # กับ loki หรือกับ archive/device/firmware ของ app
+      TEMPO_S3_ACCESS_KEY: ${TEMPO_S3_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${TEMPO_S3_SECRET_KEY}
+      TEMPO_S3_REGION: ${TEMPO_S3_REGION:-us-east-1}
     volumes:
       - ./docker/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
@@ -75,6 +82,11 @@ services:
     environment:
       <<: *minio-env
       LOKI_S3_BUCKET: ${LOKI_S3_BUCKET:-loki-chunks}
+      # credential เฉพาะของ loki bucket (สร้างด้วย scripts/minio-setup.sh) — ไม่ share
+      # กับ tempo หรือกับ archive/device/firmware ของ app
+      LOKI_S3_ACCESS_KEY: ${LOKI_S3_ACCESS_KEY}
+      LOKI_S3_SECRET_KEY: ${LOKI_S3_SECRET_KEY}
+      LOKI_S3_REGION: ${LOKI_S3_REGION:-us-east-1}
     volumes:
       - ./docker/loki/loki.yaml:/etc/loki/loki.yaml:ro
       - loki-data:/loki

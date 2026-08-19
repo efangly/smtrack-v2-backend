@@ -84,9 +84,21 @@ export class TelemetryService {
 
   /** query log ย้อนหลังสำหรับ REST endpoint */
   async find(query: QueryTelemetryDto): Promise<Paginated<LogDays>> {
+    // serial/deviceId/serialOrName ทับซ้อนกันในความหมาย (จะกรองด้วย identity ไหนของ device)
+    // ปล่อยให้ระบุมาพร้อมกันเงียบ ๆ จะทำให้ไม่รู้ว่าจริง ๆ ใช้ตัวไหนกรอง จึง reject ไปเลย
+    const identityFields = [query.serial, query.deviceId, query.serialOrName].filter(Boolean);
+    if (identityFields.length > 1) {
+      throw new BadRequestException('ระบุ serial, deviceId หรือ serialOrName ได้เพียงอย่างเดียว');
+    }
+
     const where: Prisma.LogDaysWhereInput = {};
     if (query.serial) where.serial = query.serial;
     if (query.deviceId) where.deviceId = query.deviceId;
+    // รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง — resolve เป็น deviceId
+    // ก่อน query เสมอ จึงได้ประวัติต่อเนื่องข้ามการสลับเครื่อง เหมือน /graph กับ /logday
+    if (query.serialOrName) {
+      where.deviceId = await this.assignments.resolveDeviceIdOrThrow(query.serialOrName);
+    }
     if (query.probeId) where.probeId = query.probeId;
     if (query.probe) where.probe = query.probe;
     if (query.range) {
