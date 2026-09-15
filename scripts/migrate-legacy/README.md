@@ -78,15 +78,27 @@ Optionally add a shortcut to `package.json`:
 "migrate:legacy": "ts-node scripts/migrate-legacy/migrate-legacy-device.ts"
 ```
 
-The script logs a created/skipped count per table as it goes. `skipped` rows are ones whose
-legacy foreign key (`sn` for Probes/Configs, `devName` for Repairs/Warranties) didn't match any
-migrated device — the row and reason are logged individually so you can decide whether to
-investigate or ignore (e.g. leftover rows for a device that was already deleted upstream).
+The script logs a `created`/`duplicate`/`skipped` count per table as it goes. `skipped` rows are
+ones whose legacy foreign key (`sn` for Probes/Configs, `devName` for Repairs/Warranties) didn't
+match any migrated device — the row and reason are logged individually so you can decide whether
+to investigate or ignore (e.g. leftover rows for a device that was already deleted upstream).
+`duplicate` rows are ones that already exist in the target (see below) and were left untouched.
 
-Not idempotent by design — running it twice against a target that already has the migrated
-rows will fail on unique constraints (`staticName`, `Hardware.serial`, etc). If you need to
-re-run after a failed partial migration, wipe the target's `devices`/`hardware` tables (cascades
-handle the rest) and start over.
+**Re-syncable, not idempotent-by-overwrite**: running it again against a target that already has
+some or all of the legacy rows is safe — each table checks for an existing row before inserting
+and skips it (counted as `duplicate`) instead of failing on a unique constraint or inserting a
+duplicate. Existing rows are never updated, only newly-seen legacy rows are inserted. The dedupe
+key per table:
+
+| Table | Dedupe key |
+|---|---|
+| `Devices` | `staticName` (also skips the paired `DeviceAssignments` row) |
+| `Probes` | `(deviceId, channel)` |
+| `Configs` | `deviceId` (1:1) |
+| `Repairs` | `seq` (copied verbatim from the legacy row, unique in the target) |
+| `Warranties` | `(serial, devName, createAt)` — the target has no dedicated unique/legacy-id field, so this composite (copied verbatim from legacy) is used as a best-effort identity |
+
+`Hardware` was already idempotent before this (`upsert` on `serial`) and stays that way.
 
 ## Verifying after the run
 

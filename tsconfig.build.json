@@ -1,7 +1,13 @@
 {
   "extends": "./tsconfig.json",
-  // prisma/ และ prisma.config.ts เป็น tooling ที่รันจาก source ด้วย ts-node ไม่ต้อง build
+  // prisma/, prisma.config.ts, scripts/ เป็น tooling ที่รันจาก source ด้วย ts-node ไม่ต้อง build
   // ถ้าไม่ exclude จะถูกดึงเข้า compilation ทำให้ rootDir เลื่อนขึ้นมาที่ project root
   // แล้วผลลัพธ์ออกเป็น dist/src/main.js ซึ่ง start:prod (node dist/main) หาไม่เจอ
-  "exclude": ["node_modules", "test", "dist", "prisma", "prisma.config.ts", "**/*spec.ts"]
+  //
+  // scripts/ เพิ่งเจอจริงตอน local build (ไม่ใช่ Docker เพราะ Dockerfile ไม่ COPY scripts/ เข้า
+  // builder stage เลย) — nest-cli.json ก็อป partner.proto asset ไปที่ dist/ ตรง ๆ (ไม่ใช่ dist/src/)
+  // เพราะถือว่า rootDir ต้องเป็น src เสมอ ถ้า scripts/ หลุดเข้ามาแล้ว dist/main.js หาไม่เจอ symptom
+  // จะไปโป๊ะที่ path ของ .proto ก่อน (grpc.config.ts join(__dirname, '../partner/partner.proto')
+  // ผิดที่ไปด้วยตาม __dirname ที่เลื่อนขึ้นมา)
+  "exclude": ["node_modules", "test", "dist", "prisma", "prisma.config.ts", "scripts", "**/*spec.ts"]
 }

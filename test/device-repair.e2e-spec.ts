@@ -4,6 +4,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { API_PREFIX, createTestApp, unwrap, waitFor } from './utils/create-test-app';
 import { bearerUser } from './utils/auth';
 import { buildDevices, cleanupByPrefix, seedDevice } from './fixtures/seed-data';
+import { RepairStatus } from '../src/device-repair/enums/repair-status.enum';
 
 const PREFIX = 'E2E-REPAIR-';
 
@@ -104,11 +105,11 @@ describe('Device repair (e2e)', () => {
       const res = await request(app.getHttpServer())
         .put(`${API_PREFIX}/repairs/${created.id}`)
         .set('Authorization', bearerUser())
-        .send({ status: 'closed', serial: 'SHOULD-NOT-CHANGE' });
+        .send({ status: RepairStatus.RESOLVED, serial: 'SHOULD-NOT-CHANGE' });
 
       expect(res.status).toBe(200);
       const updated = unwrap(res.body);
-      expect(updated.status).toBe('closed');
+      expect(updated.status).toBe(RepairStatus.RESOLVED);
       expect(updated.serial).toBe(serial);
 
       let audits: Awaited<ReturnType<typeof prisma.userAudit.findMany>> = [];

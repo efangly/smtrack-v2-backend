@@ -1,0 +1,187 @@
+# Partner API Guide — Third-Party Device Data Access (gRPC)
+
+This is the integration guide for third-party applications reading device metadata and
+telemetry from SMtrack. It is self-contained — you do not need access to the internal
+frontend/admin API guide to use this API.
+
+**This surface is gRPC, not REST.** It's the only gRPC endpoint in this backend — everything
+else (including admin key management, see §7) is REST/MQTT/RabbitMQ. If you don't have an
+API key yet, contact your SMtrack admin — there is no self-service sign-up, keys are issued
+manually.
+
+## 1. Connection
+
+```
+host:port   <your-smtrack-host>:50051   (GRPC_URL — ask your admin for the real value)
+TLS         plaintext for now — not yet configured; treat this as a known gap, not a
+            deliberate choice, and expect it to change
+```
+
+The full contract lives in [`src/partner/partner.proto`](../src/partner/partner.proto) in
+this repo — copy it into your client project rather than hand-transcribing the messages
+below (they're shown here for reference, but the `.proto` file is the source of truth).
+
+```proto
+syntax = "proto3";
+package partner;
+
+service PartnerService {
+  rpc GetDeviceSnapshot(GetDeviceSnapshotRequest) returns (GetDeviceSnapshotResponse);
+  rpc ListDevicesByWard(ListDevicesByWardRequest) returns (ListDevicesByWardResponse);
+}
+```
+
+There is no version segment in the package/service name yet. Breaking changes will be
+announced to partners ahead of time rather than shipped silently.
+
+## 2. Authentication
+
+Every call must carry your API key as gRPC **metadata** (not a message field):
+
+```
+x-api-key: pk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+- Your key only grants access to a specific, pre-approved list of **wards** (departments/
+  units — see §3). It does not grant access to every device in the system, and it is not
+  scoped by individual device — any device that belongs to (or is later moved into) an
+  allowed ward becomes visible automatically.
+- Keys don't expire automatically. If a key needs rotating or revoking, contact your admin
+  — a revoked key stops working immediately.
+- **Keep your key secret.** Anyone with it can read data for every device in every ward
+  it's scoped to, within your rate limit.
+
+## 3. What "ward" means here, and what "serial" means in `GetDeviceSnapshot`
+
+A **ward** is the department/unit a device is installed in (e.g. an ICU or OPD). Your key
+lists the wards it can see. `ListDevicesByWard` takes a ward directly; `GetDeviceSnapshot`
+takes a device **serial** — access is checked by resolving that device's ward and
+confirming it's one of yours, not by the serial itself being on any list.
+
+The `serial` identifies the **physical hardware unit** (the box), not a room/location. If a
+unit is ever physically swapped out for a different one at the same install location, its
+serial number changes — you're not responsible for tracking that yourself here (unlike the
+old per-serial model), since access is ward-based; the new box just needs to be in a ward
+your key already covers.
+
+## 4. Rate limiting
+
+Each API key is limited to **60 requests per minute**, across both RPCs combined. Going
+over the limit returns:
+
+```
+grpc.status.RESOURCE_EXHAUSTED (8)
+```
+
+There is currently no per-key custom limit — all keys share the same fixed budget.
+
+## 5. Error codes
+
+Every failure comes back as a standard gRPC error with one of these codes (no separate
+envelope/wrapper — this is not the REST API, there's no `{success, message, data}` shape
+here):
+
+| gRPC status | Code | Meaning | Common cause |
+|---|---|---|---|
+| `UNAUTHENTICATED` | 16 | Missing, invalid, or revoked `x-api-key` metadata |
+| `NOT_FOUND` | 5 | The serial/ward doesn't exist, **or** it exists but isn't in your key's allowed wards — deliberately indistinguishable so a wrong/guessed serial can't be used to probe what exists |
+| `INVALID_ARGUMENT` | 3 | Empty `serial`/`ward`, or a bad `page`/`limit` |
+| `RESOURCE_EXHAUSTED` | 8 | Over 60 requests/minute for this key |
+
+## 6. RPCs
+
+### `GetDeviceSnapshot(serial)` — metadata + trailing 1-hour telemetry
+
+Returns a curated device snapshot plus **the last hour** of telemetry, always — there is no
+way to request a different or wider window; this RPC is intentionally fixed-window, not
+paginated history. Internal/location fields (which ward, physical position, etc.) are
+excluded from `DeviceMetadata` on purpose — this call never tells you *where* a device is,
+only its own state.
+
+**Request** (`GetDeviceSnapshotRequest`): `serial` (string, required).
+
+**Response** (`GetDeviceSnapshotResponse`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `device.serial` | string | the serial you requested |
+| `device.name` | string | human-readable device name |
+| `device.status` | bool | device enabled/active flag |
+| `device.firmware` | string | current firmware version |
+| `device.online` | bool | currently connected |
+| `timeseries` | repeated `TelemetryPoint` | last 1h, newest first — empty if no readings in that window |
+
+`TelemetryPoint`: `send_time` (ISO 8601 UTC string), `temp`, `temp_display`, `humidity`,
+`humidity_display`, `temp_internal`, `battery` (int), `plug`, `door1`, `door2`, `door3`,
+`internet`, `ext_memory` (all bool), `probe` (string channel id).
+
+**Example** (Node, `@grpc/grpc-js` + `@grpc/proto-loader`):
+
+```js
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+
+const pkgDef = protoLoader.loadSync('partner.proto');
+const proto = grpc.loadPackageDefinition(pkgDef);
+const client = new proto.partner.PartnerService(
+  'smtrack-host:50051',
+  grpc.credentials.createInsecure(),
+);
+
+const metadata = new grpc.Metadata();
+metadata.set('x-api-key', process.env.PARTNER_API_KEY);
+
+client.GetDeviceSnapshot({ serial: 'SN-00042' }, metadata, (err, res) => {
+  if (err) throw err; // err.code is the grpc.status enum value — see §5
+  console.log(res.device, res.timeseries);
+});
+```
+
+Equivalent with `grpcurl`:
+
+```bash
+grpcurl -plaintext \
+  -H "x-api-key: $PARTNER_API_KEY" \
+  -d '{"serial": "SN-00042"}' \
+  smtrack-host:50051 partner.PartnerService/GetDeviceSnapshot
+```
+
+---
+
+### `ListDevicesByWard(ward, page, limit)` — every device in a ward + its latest reading
+
+Returns every device in `ward` (paginated), each with its metadata plus its **single most
+recent** telemetry reading — not the full history. If you need history for a specific
+device, follow up with `GetDeviceSnapshot`.
+
+**Request** (`ListDevicesByWardRequest`): `ward` (string, required), `page` (int, default
+1), `limit` (int, default 20, max 100).
+
+**Response** (`ListDevicesByWardResponse`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `devices` | repeated `DeviceWithLatestReading` | |
+| `devices[].device` | `DeviceMetadata` | same shape as above |
+| `devices[].latest` | `TelemetryPoint`, optional | **absent** (not a zero value) if the device has no telemetry yet |
+| `total` | int | total devices in the ward, for pagination |
+| `page` / `limit` | int | echoes back what was applied |
+
+**Example**:
+
+```bash
+grpcurl -plaintext \
+  -H "x-api-key: $PARTNER_API_KEY" \
+  -d '{"ward": "ICU", "page": 1, "limit": 20}' \
+  smtrack-host:50051 partner.PartnerService/ListDevicesByWard
+```
+
+## 7. Getting/rotating a key
+
+Key management stays REST (internal, admin-only — not part of this gRPC surface):
+
+1. Tell your SMtrack admin which **wards** you need access to.
+2. They issue a key scoped to exactly those wards (`POST /admin/partner-keys` with
+   `{ "name": "...", "wards": ["ICU", "OPD"] }`) and hand you the plaintext value **once** —
+   it is never shown again, so store it securely on your side immediately.
+3. If you lose it or suspect it's leaked, ask your admin to revoke it and issue a new one.

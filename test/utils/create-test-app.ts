@@ -41,6 +41,15 @@ export class InMemoryRedisStub {
   async getOrSet<T>(_key: string, _ttl: number, factory: () => Promise<T>): Promise<T> {
     return factory();
   }
+
+  private readonly counters = new Map<string, number>();
+
+  /** ไม่ต้อง honor TTL จริงในเทส — นับต่อ process แค่พอให้ GrpcPartnerRateLimitGuard ทำงานได้ */
+  async incrementWithExpiry(key: string, _ttlSeconds: number): Promise<number> {
+    const next = (this.counters.get(key) ?? 0) + 1;
+    this.counters.set(key, next);
+    return next;
+  }
 }
 
 /**

@@ -31,6 +31,7 @@ import { LogConsumerModule } from './consumer/log-consumer.module';
 import { CacheModule } from './common/cache/cache.module';
 import { AuthModule } from './auth/auth.module';
 import { MobileModule } from './mobile/mobile.module';
+import { PartnerModule } from './partner/partner.module';
 
 @Module({
   imports: [
@@ -72,6 +73,7 @@ import { MobileModule } from './mobile/mobile.module';
     LogConsumerModule,
     CacheModule,
     MobileModule,
+    PartnerModule,
   ],
 })
 export class AppModule {}

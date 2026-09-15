@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package partner;
+
+// Third-party facing gRPC surface — see docs/partner-api-guide.md for the full integration
+// guide and docs/adr/0003-partner-api-keys-scope-by-ward.md for why access is scoped by
+// ward (not per-serial). Admin key issuance stays REST (/admin/partner-keys), unrelated to
+// this contract.
+service PartnerService {
+  // Device metadata + trailing 1 hour of telemetry, always — no arbitrary date range.
+  rpc GetDeviceSnapshot(GetDeviceSnapshotRequest) returns (GetDeviceSnapshotResponse);
+
+  // Every device in `ward` (that the caller's key is scoped to) plus each device's single
+  // latest telemetry reading — not the full history.
+  rpc ListDevicesByWard(ListDevicesByWardRequest) returns (ListDevicesByWardResponse);
+}
+
+message GetDeviceSnapshotRequest {
+  string serial = 1;
+}
+
+message DeviceMetadata {
+  string serial = 1;
+  string name = 2;
+  bool status = 3;
+  string firmware = 4;
+  bool online = 5;
+}
+
+message TelemetryPoint {
+  string send_time = 1; // ISO 8601 UTC
+  double temp = 2;
+  double temp_display = 3;
+  double humidity = 4;
+  double humidity_display = 5;
+  double temp_internal = 6;
+  int32 battery = 7;
+  bool plug = 8;
+  bool door1 = 9;
+  bool door2 = 10;
+  bool door3 = 11;
+  bool internet = 12;
+  bool ext_memory = 13;
+  string probe = 14;
+}
+
+message GetDeviceSnapshotResponse {
+  DeviceMetadata device = 1;
+  repeated TelemetryPoint timeseries = 2; // last 1h, newest first
+}
+
+message ListDevicesByWardRequest {
+  string ward = 1;
+  int32 page = 2;  // optional, default 1
+  int32 limit = 3; // optional, default 20, max 100
+}
+
+message DeviceWithLatestReading {
+  DeviceMetadata device = 1;
+  optional TelemetryPoint latest = 2; // unset if the device has no telemetry yet
+}
+
+message ListDevicesByWardResponse {
+  repeated DeviceWithLatestReading devices = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
+}

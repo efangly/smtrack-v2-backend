@@ -100,7 +100,8 @@ describe('RabbitMQ consumer (e2e)', () => {
       probe: '1',
       // float มาจากต้นทางที่ประกาศ @IsNumber — ต้องถูกปัดเป็น int (เป็น % ของแบตเตอรี่)
       battery: 86.6,
-      // ไม่ระบุ timezone — ต้องถูกตีความเป็น UTC ไม่ใช่เวลาท้องถิ่นของ server
+      // ไม่ระบุ timezone — ต้องถูกตีความเป็นเวลาไทย (Asia/Bangkok, UTC+7) เสมอตาม
+      // normalizeToUtcIso() ไม่ใช่ UTC ตรง ๆ (ดู create-telemetry.dto.ts) — 10:00 ไทย = 03:00 UTC
       sendTime: '2026-08-01 10:00:00',
     });
 
@@ -114,7 +115,7 @@ describe('RabbitMQ consumer (e2e)', () => {
     expect(log?.temp).toBe(4.2);
     expect(log?.door1).toBe(true);
     expect(log?.battery).toBe(87);
-    expect(log?.sendTime.toISOString()).toBe('2026-08-01T10:00:00.000Z');
+    expect(log?.sendTime.toISOString()).toBe('2026-08-01T03:00:00.000Z');
     // ingest ประทับ deviceId/probeId ให้เอง — ยืนยันว่าเดินผ่าน business logic เดียวกับ MQTT/HTTP
     expect(log?.deviceId).not.toBeNull();
     expect(log?.probeId).not.toBeNull();

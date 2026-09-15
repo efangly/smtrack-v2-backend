@@ -33,6 +33,7 @@
 - **Config:** `@nestjs/config` + `.env`
 - **Testing:** Jest
 - **Package manager:** npm
+- **Partner API (third-party, scoped exception):** gRPC (`@grpc/grpc-js` + `@grpc/proto-loader`, `@nestjs/microservices` GRPC transport) — เดียวที่ใช้ gRPC ในโปรเจคนี้ ไม่ใช่ transport มาตรฐานของทั้งโปรเจค ทุกอย่างอื่นยังเป็น MQTT/RabbitMQ/REST/SSE ตามปกติ ดู `docs/partner-api-guide.md` และ `docs/adr/0003-partner-api-keys-scope-by-ward.md`
 
 ## โครงสร้างโปรเจค
 

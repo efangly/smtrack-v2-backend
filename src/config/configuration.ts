@@ -21,6 +21,8 @@ export interface AppConfig {
   };
   jwtSecret: string;
   deviceSecret: string;
+  /** Partner API (third-party) gRPC listen address — ดู grpc.config.ts */
+  grpcUrl: string;
   archive: {
     retentionMonths: number;
     s3: {
@@ -89,6 +91,7 @@ export default (): AppConfig => ({
   },
   jwtSecret: process.env.JWT_SECRET ?? '',
   deviceSecret: process.env.DEVICE_SECRET ?? '',
+  grpcUrl: process.env.GRPC_URL ?? '0.0.0.0:50051',
   archive: {
     retentionMonths: parseInt(process.env.ARCHIVE_RETENTION_MONTHS ?? '6', 10),
     s3: {

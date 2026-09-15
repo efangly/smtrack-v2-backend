@@ -77,6 +77,28 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return value;
   }
 
+  /**
+   * INCR แบบ fixed-window rate limit counter — ตั้ง TTL เฉพาะครั้งแรกที่ key ถูกสร้าง (count===1)
+   * เท่านั้น ไม่งั้น window จะถูกเลื่อนออกไปทุกครั้งที่มี request ใหม่เข้ามา (ไม่ใช่ fixed window อีกต่อไป)
+   * ไม่ใช้ `EXPIRE ... NX` (Redis 7+ เท่านั้น) เพื่อไม่ผูกกับเวอร์ชัน server
+   *
+   * fail-open: ถ้า Redis ต่อไม่ได้/error คืน 0 (เหมือนยังไม่เคยมี request) แทนการ throw
+   * เพื่อไม่ให้ Redis ล่มกลายเป็นบล็อก traffic ของ partner ทั้งหมด (เหมือน getOrSet ข้างบน)
+   */
+  async incrementWithExpiry(key: string, ttlSeconds: number): Promise<number> {
+    if (!this.client) return 0;
+    try {
+      const count = await this.client.incr(key);
+      if (count === 1) {
+        await this.client.expire(key, ttlSeconds);
+      }
+      return count;
+    } catch (err) {
+      this.logger.warn(`Redis incrementWithExpiry failed for ${key}: ${this.msg(err)}`);
+      return 0;
+    }
+  }
+
   private msg(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
   }

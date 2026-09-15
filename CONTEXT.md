@@ -19,3 +19,11 @@ _Avoid_: device (ambiguous with the install point), unit
 **Swap**:
 Replacing the box currently occupying an install point with a different one, recorded as a new `DeviceAssignments` row with a closed predecessor. The only path allowed to change `Devices.serial`.
 _Avoid_: move device, reassign (when referring specifically to a serial change — "move" is ambiguous between this and changing `ward`/`position`)
+
+**Partner**:
+An external third-party organization consuming device metadata and time series through the Partner API, authenticated by a Partner API Key rather than user or device credentials.
+_Avoid_: third party, client (ambiguous with other uses in this codebase)
+
+**Partner API Key**:
+A credential issued to a Partner, scoped to an explicit allowlist of `ward`s (not per-Box `serial` — that was the original design in [ADR-0002](./docs/adr/0002-partner-api-keys-scope-by-box-serial.md), superseded by [ADR-0003](./docs/adr/0003-partner-api-keys-scope-by-ward.md)). Presented as the gRPC metadata key `x-api-key`; only its hash is stored.
+_Avoid_: token, access key

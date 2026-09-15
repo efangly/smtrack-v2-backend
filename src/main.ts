@@ -12,6 +12,7 @@ import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
 import { buildMqttOptions } from './config/mqtt.config';
 import { buildRmqOptions, buildRmqLogOptions } from './config/rabbitmq.config';
+import { buildGrpcOptions } from './config/grpc.config';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 
@@ -91,11 +92,14 @@ async function bootstrap(): Promise<void> {
     app.connectMicroservice(buildRmqOptions(config), { inheritAppConfig: true });
     // attach RabbitMQ microservice แยก queue สำหรับ consume log/telemetry (ปริมาณสูงกว่า ไม่ให้บล็อก queue ข้างบน)
     app.connectMicroservice(buildRmqLogOptions(config), { inheritAppConfig: true });
+    // attach gRPC microservice สำหรับ Partner API (third-party) — เดียวที่ใช้ gRPC ในโปรเจคนี้
+    // ดู docs/adr/0003-partner-api-keys-scope-by-ward.md
+    app.connectMicroservice(buildGrpcOptions(config), { inheritAppConfig: true });
 
     await withTimeout(
       app.startAllMicroservices(),
       STARTUP_TIMEOUT_MS,
-      'startAllMicroservices (MQTT/RabbitMQ connect)',
+      'startAllMicroservices (MQTT/RabbitMQ/gRPC connect)',
     );
 
     const port = config.get<number>('port') ?? 3000;
@@ -103,6 +107,7 @@ async function bootstrap(): Promise<void> {
     logger.log(`HTTP server listening on :${port}`);
     logger.log('MQTT microservice connected');
     logger.log('RabbitMQ log consumer connected');
+    logger.log('Partner API gRPC microservice connected');
   } catch (err) {
     // ห้ามใช้ Nest/Pino logger ที่นี่ — จุดพังที่พบบ่อยที่สุดคือก่อน useLogger() ถูกเรียก
     // (log ที่ buffer ไว้จะไม่มีวัน flush ถ้า NestFactory.create() ไม่ resolve)

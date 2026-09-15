@@ -6,22 +6,16 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # ── builder ───────────────────────────────────────────────────────────────────
-# generate Prisma client ก่อนเสมอ — Prisma 7 emit ลง src/generated/prisma ซึ่ง gitignore ไว้
-# ถ้าไม่ generate ก่อน nest build จะพังตรง prisma.service.ts ที่ import จาก path นั้น
 FROM deps AS builder
 WORKDIR /app
 COPY tsconfig*.json nest-cli.json prisma.config.ts ./
 COPY prisma ./prisma
 COPY test ./test
 COPY src ./src
-# prisma.config.ts เรียก env('DATABASE_URL') ตอนโหลด config เลย จึงต้องมีค่าหลอกไว้ตอน build
-# (generate ไม่ได้ต่อ DB จริง ค่านี้ไม่ถูกใช้ — ค่าจริงมาจาก compose ตอน runtime)
 RUN DATABASE_URL=postgresql://build:build@localhost:5432/build \
     npx prisma generate && npm run build
 
 # ── migrate ───────────────────────────────────────────────────────────────────
-# image สำหรับ job แบบ one-shot: prisma migrate deploy / db seed
-# ต้องใช้ builder เพราะ prisma CLI + ts-node + prisma.config.ts เป็น devDeps ทั้งหมด
 FROM builder AS migrate
 
 # ── runner ────────────────────────────────────────────────────────────────────
@@ -35,13 +29,9 @@ RUN apk add --no-cache curl \
 
 USER nestjs
 
-# prod deps เท่านั้น — Prisma 7 เป็น Rust-free ไม่ต้องมี engine binary ติดมาด้วย
-# รันเป็น user nestjs ตั้งแต่ npm ci เพื่อให้ node_modules เป็นเจ้าของถูกต้องทันที
-# (ไม่ต้อง chown -R ทีหลัง ซึ่งจะทำให้ overlayfs copy-up ทั้ง node_modules เป็นเลเยอร์ซ้ำ)
 COPY --chown=nestjs:nodejs package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-# nest build คอมไพล์ src/generated/prisma ไปเป็น dist/generated/prisma ให้แล้ว
 COPY --chown=nestjs:nodejs --from=builder /app/dist ./dist
 
 EXPOSE 3000

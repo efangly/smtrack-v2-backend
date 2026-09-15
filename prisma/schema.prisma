@@ -405,3 +405,53 @@ model ArchiveRestore {
 
   @@map("archive_restore")
 }
+
+/// credential ของ Partner (third-party ภายนอก) — เก็บแค่ hash ของ key จริง (SHA-256)
+/// plaintext โชว์ครั้งเดียวตอนสร้างเท่านั้น ดู ADR-0002 เรื่อง Box serial กับ ADR-0003 เรื่อง
+/// scope ด้วย ward (แทน per-serial allowlist เดิม)
+model PartnerApiKeys {
+  id          String                  @id @default(uuid()) @map("id")
+  name        String                  @map("name")
+  keyHash     String                  @unique @map("key_hash")
+  /// ไม่ sensitive — เก็บไว้แค่ให้แอดมิน list แล้วแยกออกจากกันได้โดยไม่ต้องเก็บ/โชว์ key เต็ม
+  keyPrefix   String                  @map("key_prefix")
+  revokedAt   DateTime?               @map("revoked_at")
+  wards       PartnerApiKeyWards[]
+  requestLogs PartnerApiRequestLogs[]
+  createAt    DateTime                @default(now()) @map("create_at")
+  updateAt    DateTime                @default(now()) @updatedAt @map("update_at")
+
+  @@map("partner_api_keys")
+}
+
+/// allowlist ของ key แต่ละใบ — ตั้งใจ scope ด้วย ward (ไม่ใช่ serial รายตัวเหมือนเดิม) ดู ADR-0003
+model PartnerApiKeyWards {
+  id       String         @id @default(uuid()) @map("id")
+  keyId    String         @map("key_id")
+  ward     String         @map("ward")
+  key      PartnerApiKeys @relation(fields: [keyId], references: [id], onDelete: Cascade)
+  createAt DateTime       @default(now()) @map("create_at")
+
+  @@unique([keyId, ward])
+  @@index([keyId])
+  @@map("partner_api_key_wards")
+}
+
+/// audit log ของทุก request ที่เข้า Partner API — เก็บไว้สำหรับ billing/investigation
+/// retention 90 วัน ดูแลโดย cron ใน PartnerApiKeyCleanupService (เหมือน backup module)
+model PartnerApiRequestLogs {
+  id         String         @id @default(uuid()) @map("id")
+  keyId      String         @map("key_id")
+  /// เติมเฉพาะ GetDeviceSnapshot — ListDevicesByWard เติม ward ด้านล่างแทน
+  serial     String?        @map("serial")
+  /// เติมเฉพาะ ListDevicesByWard
+  ward       String?        @map("ward")
+  /// path เดิมของ REST — ตอนนี้เก็บชื่อ RPC method (เช่น partner.PartnerService/GetDeviceSnapshot)
+  path       String         @map("path")
+  statusCode Int            @map("status_code")
+  key        PartnerApiKeys @relation(fields: [keyId], references: [id], onDelete: Cascade)
+  createAt   DateTime       @default(now()) @map("create_at")
+
+  @@index([keyId, createAt])
+  @@map("partner_api_request_logs")
+}

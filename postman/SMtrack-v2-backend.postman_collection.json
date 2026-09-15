@@ -1,7 +1,7 @@
 {
  "info": {
   "name": "SMtrack v2 Backend",
-  "description": "REST API collection สำหรับ SMtrack v2 backend (NestJS, IoT telemetry/notification ผ่าน MQTT + TimescaleDB).\n\nอัปเดตล่าสุด: sync ครบทุก module ที่มีในโค้ดปัจจุบัน (เพิ่ม Audit, Probe, Device Config, Device Repair, Warranties, Firmware, User Audit, device swap/assignment history, SSE devices/multi-channel stream) — global prefix `/log`, ทุก response ห่อด้วย ResponseInterceptor รูปแบบ `{success, message, data, timestamp, statusCode}` (ยกเว้น endpoint ที่มี @SkipInterceptor เช่น /log/health, firmware download, ทุก SSE stream), error response เป็น `{message, success:false, data:null, traceStack}` (traceStack โผล่เฉพาะ NODE_ENV=development)\n\nAuth guard ที่ใช้งานจริง:\n- **JwtAuthGuard** (`Authorization: Bearer {{jwtToken}}`) — JWT verify ด้วย JWT_SECRET, payload ต้องมี `role` เป็นหนึ่งใน SUPER/SERVICE/ADMIN/USER/LEGACY_ADMIN/LEGACY_USER/GUEST\n- **DeviceJwtAuthGuard** (`Authorization: Bearer {{deviceJwtToken}}`) — JWT verify ด้วย DEVICE_SECRET, payload ต้องมี `sn` (serial ของอุปกรณ์ — controller จะ overwrite serial ใน body ด้วยค่านี้เสมอ ไม่เชื่อ serial ที่ client ส่งมา)\n- **RolesGuard** (`@Roles(...)`) — ต่อจาก JwtAuthGuard อีกชั้น เช็ค `role` ใน payload ตรงกับที่ endpoint กำหนด ไม่ตรงจะได้ 403\n- **SseAuthGuard** — เหมือน JwtAuthGuard แต่รับ token ได้ทั้ง header และ `?token=` query (เผื่อ EventSource ที่ตั้ง header ไม่ได้)\n\nสร้าง token ทดสอบได้ที่ jwt.io: เลือก algorithm HS256, ใส่ secret เป็นค่า JWT_SECRET/DEVICE_SECRET จาก .env, payload ตามที่ endpoint นั้นต้องการ (ดู description แต่ละ request)\n\nไม่รวม MQTT/RabbitMQ @EventPattern/@MessagePattern handlers (mqtt.controller.ts, consumer/*.controller.ts) เพราะไม่ใช่ REST endpoint",
+  "description": "REST API collection สำหรับ SMtrack v2 backend (NestJS, IoT telemetry/notification ผ่าน MQTT + TimescaleDB).\n\nอัปเดตล่าสุด: sync ครบทุก module ที่มีในโค้ดปัจจุบัน (เพิ่ม Audit, Probe, Device Config, Device Repair, Warranties, Firmware, User Audit, device swap/assignment history, SSE devices/multi-channel stream) — global prefix `/log`, ทุก response ห่อด้วย ResponseInterceptor รูปแบบ `{success, message, data, timestamp, statusCode}` (ยกเว้น endpoint ที่มี @SkipInterceptor เช่น /log/health, firmware download, ทุก SSE stream), error response เป็น `{message, success:false, data:null, traceStack}` (traceStack โผล่เฉพาะ NODE_ENV=development)\n\nAuth guard ที่ใช้งานจริง:\n- **JwtAuthGuard** (`Authorization: Bearer {{jwtToken}}`) — JWT verify ด้วย JWT_SECRET, payload ต้องมี `role` เป็นหนึ่งใน SUPER/SERVICE/ADMIN/USER/LEGACY_ADMIN/LEGACY_USER/GUEST\n- **DeviceJwtAuthGuard** (`Authorization: Bearer {{deviceJwtToken}}`) — JWT verify ด้วย DEVICE_SECRET, payload ต้องมี `sn` (serial ของอุปกรณ์ — controller จะ overwrite serial ใน body ด้วยค่านี้เสมอ ไม่เชื่อ serial ที่ client ส่งมา)\n- **RolesGuard** (`@Roles(...)`) — ต่อจาก JwtAuthGuard อีกชั้น เช็ค `role` ใน payload ตรงกับที่ endpoint กำหนด ไม่ตรงจะได้ 403\n- **SseAuthGuard** — เหมือน JwtAuthGuard แต่รับ token ได้ทั้ง header และ `?token=` query (เผื่อ EventSource ที่ตั้ง header ไม่ได้)\n\nPartner API (third-party device data) เป็น **gRPC** แยกจากทุก endpoint ในคอลเลกชันนี้ (ซึ่งเป็น REST ทั้งหมด) — auth ผ่าน gRPC metadata `x-api-key` ไม่ใช่ HTTP header จึง represent ใน Postman JSON collection ตรง ๆ ไม่ได้ ดู docs/partner-api-guide.md สำหรับ .proto contract + grpcurl examples — folder \"Partner API\" ในคอลเลกชันนี้มีแค่ REST admin key management (/admin/partner-keys) เท่านั้น\n\nสร้าง token ทดสอบได้ที่ jwt.io: เลือก algorithm HS256, ใส่ secret เป็นค่า JWT_SECRET/DEVICE_SECRET จาก .env, payload ตามที่ endpoint นั้นต้องการ (ดู description แต่ละ request)\n\nไม่รวม MQTT/RabbitMQ @EventPattern/@MessagePattern handlers (mqtt.controller.ts, consumer/*.controller.ts) เพราะไม่ใช่ REST endpoint",
   "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
  },
  "auth": {
@@ -114,6 +114,12 @@
    "key": "month",
    "value": "2026-06",
    "type": "string"
+  },
+  {
+   "key": "partnerApiKeyId",
+   "value": "",
+   "type": "string",
+   "description": "id ของ PartnerApiKeys record (ไม่ใช่ตัว key เอง) ใช้กับ GET/DELETE /admin/partner-keys/:id"
   }
  ],
  "item": [
@@ -2160,6 +2166,116 @@
        ]
       },
       "description": "month format: YYYY-MM. จะได้ 404 ถ้า month นั้นยังไม่ได้ถูก restore ไว้ก่อน"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Partner API",
+   "description": "Admin-only key management for the Partner API (REST, JWT + Role.SUPER). The public, third-party-facing surface itself is gRPC now, not REST — see docs/partner-api-guide.md for the .proto contract and grpcurl examples (Postman's JSON collection format can't represent it faithfully; import partner.proto into Postman's own gRPC request type directly if you want it in-app). See docs/adr/0003-partner-api-keys-scope-by-ward.md for why keys are scoped by ward.",
+   "item": [
+    {
+     "name": "Admin: Create partner API key",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/log/admin/partner-keys",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "admin",
+        "partner-keys"
+       ]
+      },
+      "description": "Admin-only — ใช้ jwtToken ของ collection (inherit) และ role ต้องเป็น SUPER เท่านั้น (RolesGuard)\n\nBody ตาม CreatePartnerApiKeyDto: name (label ของ partner), wards (allowlist ของ ward — อย่างน้อย 1 ตัว) ดู ADR-0003 สำหรับที่มาของ scope ด้วย ward\n\nresponse.data.apiKey คือ plaintext key — โชว์ครั้งนี้ครั้งเดียวเท่านั้น หลังจากนี้ระบบมีแค่ hash — เก็บค่านี้ไปใช้เรียก gRPC ต่อได้เลย (metadata x-api-key) ดู docs/partner-api-guide.md, Postman เองยิง gRPC ตรงจาก item REST นี้ไม่ได้ ส่วน id ของ key ใช้กับ GET/DELETE ด้านล่างไว้ที่ {{partnerApiKeyId}}",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"name\": \"Acme Corp\",\n  \"wards\": [\"{{ward}}\"]\n}",
+       "options": {
+        "raw": {
+         "language": "json"
+        }
+       }
+      }
+     }
+    },
+    {
+     "name": "Admin: List partner API keys",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/admin/partner-keys?page=1&limit=20",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "admin",
+        "partner-keys"
+       ],
+       "query": [
+        {
+         "key": "page",
+         "value": "1",
+         "disabled": true
+        },
+        {
+         "key": "limit",
+         "value": "20",
+         "disabled": true
+        }
+       ]
+      },
+      "description": "Admin-only (SUPER) — paginated list ของทุก partner API key พร้อม keyPrefix/serials/revokedAt (ไม่มี key/hash เต็มโผล่มา)"
+     }
+    },
+    {
+     "name": "Admin: Get partner API key",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/admin/partner-keys/{{partnerApiKeyId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "admin",
+        "partner-keys",
+        "{{partnerApiKeyId}}"
+       ]
+      },
+      "description": "Admin-only (SUPER) — รายละเอียด key เดียว รวม allowlist ของ serial ทั้งหมด"
+     }
+    },
+    {
+     "name": "Admin: Revoke partner API key",
+     "request": {
+      "method": "DELETE",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/log/admin/partner-keys/{{partnerApiKeyId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "log",
+        "admin",
+        "partner-keys",
+        "{{partnerApiKeyId}}"
+       ]
+      },
+      "description": "Admin-only (SUPER) — soft revoke (ตั้ง revokedAt ไม่ลบแถวทิ้ง เพื่อรักษาประวัติ audit log ที่อ้างถึง key นี้) หลัง revoke แล้ว key นี้ใช้เรียก /partner/devices/* ไม่ได้อีก (401)"
      }
     }
    ]

@@ -4,9 +4,12 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, Day } from '../../src/generated/prisma/client';
 
 /**
- * One-shot cutover: copies metadata from the legacy smtrack-device DB (SOURCE_DATABASE_URL)
+ * Cutover / re-sync: copies metadata from the legacy smtrack-device DB (SOURCE_DATABASE_URL)
  * into this project's schema (DATABASE_URL). Does NOT touch LogDays/notifications — see
- * scripts/migrate-legacy/README.md. Not idempotent: run once against an empty target.
+ * scripts/migrate-legacy/README.md. Safe to re-run against a target that already has some or
+ * all of the legacy rows: each table checks for an existing row before inserting and skips
+ * (counts as `duplicate`) rather than erroring or inserting a duplicate — see the dedupe key
+ * used per table below.
  */
 
 interface LegacyDevice {
@@ -127,10 +130,11 @@ interface LegacyWarranty {
 interface Summary {
   created: number;
   skipped: number;
+  duplicate: number;
 }
 
 function newSummary(): Summary {
-  return { created: 0, skipped: 0 };
+  return { created: 0, skipped: 0, duplicate: 0 };
 }
 
 async function migrateDevices(
@@ -144,6 +148,11 @@ async function migrateDevices(
   const summary = newSummary();
   const serialToNewDeviceId = new Map<string, string>();
   const staticNameToSerial = new Map<string, string>();
+
+  const existingDevices = await target.devices.findMany({
+    select: { id: true, staticName: true },
+  });
+  const existingByStaticName = new Map(existingDevices.map((d) => [d.staticName, d.id]));
 
   const { rows } = await source.query<LegacyDevice>('SELECT * FROM "Devices"');
 
@@ -160,6 +169,14 @@ async function migrateDevices(
         updateAt: legacy.updateAt,
       },
     });
+
+    const existingDeviceId = existingByStaticName.get(legacy.staticName);
+    if (existingDeviceId) {
+      serialToNewDeviceId.set(legacy.id, existingDeviceId);
+      staticNameToSerial.set(legacy.staticName, legacy.id);
+      summary.duplicate += 1;
+      continue;
+    }
 
     const device = await target.devices.create({
       data: {
@@ -204,6 +221,9 @@ async function migrateProbes(
   serialToNewDeviceId: Map<string, string>,
 ): Promise<Summary> {
   const summary = newSummary();
+  const existingProbes = await target.probes.findMany({ select: { deviceId: true, channel: true } });
+  const existingKeys = new Set(existingProbes.map((p) => `${p.deviceId}|${p.channel}`));
+
   const { rows } = await source.query<LegacyProbe>('SELECT * FROM "Probes"');
 
   for (const legacy of rows) {
@@ -213,6 +233,13 @@ async function migrateProbes(
       summary.skipped += 1;
       continue;
     }
+
+    const key = `${deviceId}|${legacy.channel}`;
+    if (existingKeys.has(key)) {
+      summary.duplicate += 1;
+      continue;
+    }
+
     await target.probes.create({
       data: {
         deviceId,
@@ -246,6 +273,7 @@ async function migrateProbes(
         updateAt: legacy.updateAt,
       },
     });
+    existingKeys.add(key);
     summary.created += 1;
   }
 
@@ -258,6 +286,9 @@ async function migrateConfigs(
   serialToNewDeviceId: Map<string, string>,
 ): Promise<Summary> {
   const summary = newSummary();
+  const existingConfigs = await target.configs.findMany({ select: { deviceId: true } });
+  const existingDeviceIds = new Set(existingConfigs.map((c) => c.deviceId));
+
   const { rows } = await source.query<LegacyConfig>('SELECT * FROM "Configs"');
 
   for (const legacy of rows) {
@@ -267,6 +298,12 @@ async function migrateConfigs(
       summary.skipped += 1;
       continue;
     }
+
+    if (existingDeviceIds.has(deviceId)) {
+      summary.duplicate += 1;
+      continue;
+    }
+
     await target.configs.create({
       data: {
         deviceId,
@@ -293,6 +330,7 @@ async function migrateConfigs(
         updateAt: legacy.updateAt,
       },
     });
+    existingDeviceIds.add(deviceId);
     summary.created += 1;
   }
 
@@ -305,6 +343,9 @@ async function migrateRepairs(
   staticNameToSerial: Map<string, string>,
 ): Promise<Summary> {
   const summary = newSummary();
+  const existingRepairs = await target.repairs.findMany({ select: { seq: true } });
+  const existingSeqs = new Set(existingRepairs.map((r) => r.seq));
+
   const { rows } = await source.query<LegacyRepair>('SELECT * FROM "Repairs"');
 
   for (const legacy of rows) {
@@ -314,6 +355,12 @@ async function migrateRepairs(
       summary.skipped += 1;
       continue;
     }
+
+    if (existingSeqs.has(legacy.seq)) {
+      summary.duplicate += 1;
+      continue;
+    }
+
     await target.repairs.create({
       data: {
         seq: legacy.seq,
@@ -333,6 +380,7 @@ async function migrateRepairs(
         updateAt: legacy.updateAt,
       },
     });
+    existingSeqs.add(legacy.seq);
     summary.created += 1;
   }
 
@@ -345,6 +393,13 @@ async function migrateWarranties(
   staticNameToSerial: Map<string, string>,
 ): Promise<Summary> {
   const summary = newSummary();
+  const existingWarranties = await target.warranties.findMany({
+    select: { serial: true, devName: true, createAt: true },
+  });
+  const existingKeys = new Set(
+    existingWarranties.map((w) => `${w.serial}|${w.devName}|${w.createAt.getTime()}`),
+  );
+
   const { rows } = await source.query<LegacyWarranty>('SELECT * FROM "Warranties"');
 
   for (const legacy of rows) {
@@ -354,6 +409,13 @@ async function migrateWarranties(
       summary.skipped += 1;
       continue;
     }
+
+    const key = `${serial}|${legacy.devName}|${legacy.createAt.getTime()}`;
+    if (existingKeys.has(key)) {
+      summary.duplicate += 1;
+      continue;
+    }
+
     await target.warranties.create({
       data: {
         serial,
@@ -372,6 +434,7 @@ async function migrateWarranties(
         updateAt: legacy.updateAt,
       },
     });
+    existingKeys.add(key);
     summary.created += 1;
   }
 
@@ -389,24 +452,30 @@ async function main(): Promise<void> {
     console.log('migrating Devices → Hardware + Devices + DeviceAssignments ...');
     const { summary: devicesSummary, serialToNewDeviceId, staticNameToSerial } =
       await migrateDevices(source, target);
-    console.log(`  devices: created=${devicesSummary.created}`);
+    console.log(`  devices: created=${devicesSummary.created} duplicate=${devicesSummary.duplicate}`);
 
     console.log('migrating Probes ...');
     const probesSummary = await migrateProbes(source, target, serialToNewDeviceId);
-    console.log(`  probes: created=${probesSummary.created} skipped=${probesSummary.skipped}`);
+    console.log(
+      `  probes: created=${probesSummary.created} duplicate=${probesSummary.duplicate} skipped=${probesSummary.skipped}`,
+    );
 
     console.log('migrating Configs ...');
     const configsSummary = await migrateConfigs(source, target, serialToNewDeviceId);
-    console.log(`  configs: created=${configsSummary.created} skipped=${configsSummary.skipped}`);
+    console.log(
+      `  configs: created=${configsSummary.created} duplicate=${configsSummary.duplicate} skipped=${configsSummary.skipped}`,
+    );
 
     console.log('migrating Repairs ...');
     const repairsSummary = await migrateRepairs(source, target, staticNameToSerial);
-    console.log(`  repairs: created=${repairsSummary.created} skipped=${repairsSummary.skipped}`);
+    console.log(
+      `  repairs: created=${repairsSummary.created} duplicate=${repairsSummary.duplicate} skipped=${repairsSummary.skipped}`,
+    );
 
     console.log('migrating Warranties ...');
     const warrantiesSummary = await migrateWarranties(source, target, staticNameToSerial);
     console.log(
-      `  warranties: created=${warrantiesSummary.created} skipped=${warrantiesSummary.skipped}`,
+      `  warranties: created=${warrantiesSummary.created} duplicate=${warrantiesSummary.duplicate} skipped=${warrantiesSummary.skipped}`,
     );
 
     console.log('migration done.');
