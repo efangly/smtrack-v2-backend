@@ -2,13 +2,15 @@ import { NotFoundException } from '@nestjs/common';
 import { PartnerService } from './partner.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { DeviceService } from '../device/device.service';
+import { RedisService } from '../redis/redis.service';
 import { PartnerApiKeyContext } from './partner-api-key.service';
 
 describe('PartnerService', () => {
   let service: PartnerService;
   let prisma: {
-    logDays: { findMany: jest.Mock; findFirst: jest.Mock };
+    logDays: { findMany: jest.Mock; findFirst: jest.Mock; count: jest.Mock };
     devices: { findMany: jest.Mock; count: jest.Mock };
+    $queryRawUnsafe: jest.Mock;
   };
   let deviceService: { findOne: jest.Mock };
 
@@ -16,13 +18,16 @@ describe('PartnerService', () => {
 
   beforeEach(() => {
     prisma = {
-      logDays: { findMany: jest.fn(), findFirst: jest.fn() },
+      logDays: { findMany: jest.fn(), findFirst: jest.fn(), count: jest.fn() },
       devices: { findMany: jest.fn(), count: jest.fn() },
+      $queryRawUnsafe: jest.fn(),
     };
     deviceService = { findOne: jest.fn() };
     service = new PartnerService(
       prisma as unknown as PrismaService,
       deviceService as unknown as DeviceService,
+      // ไม่ cache ในเทส — เรียก factory ตรง ๆ เหมือน InMemoryRedisStub ฝั่ง e2e
+      { getOrSet: (_k: string, _t: number, f: () => unknown) => f() } as unknown as RedisService,
     );
   });
 
@@ -89,6 +94,157 @@ describe('PartnerService', () => {
       const windowMs = Date.now() - (args.where.sendTime.gte as Date).getTime();
       expect(windowMs).toBeGreaterThanOrEqual(60 * 60 * 1000 - 5000);
       expect(windowMs).toBeLessThanOrEqual(60 * 60 * 1000 + 5000);
+    });
+  });
+
+  describe('getDeviceHistory', () => {
+    it('throws NotFoundException for a ward outside the allowlist before querying', async () => {
+      deviceService.findOne.mockResolvedValue({
+        serial: 'SN-1',
+        ward: 'OPD',
+        name: 'x',
+        status: true,
+        online: true,
+      });
+
+      await expect(service.getDeviceHistory(apiKey, 'SN-1', 'DAY_7')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['DAY_1', '15 minutes', 1],
+      ['DAY_7', '1 hour', 7],
+      ['DAY_30', '3 hours', 30],
+    ] as const)(
+      '%s uses bucket %s and a %i-day cutoff, mapping rows to the response shape',
+      async (range, bucket, days) => {
+        deviceService.findOne.mockResolvedValue({
+          serial: 'SN-1',
+          ward: 'ICU',
+          name: 'F',
+          status: true,
+          online: true,
+          hardware: { firmware: '1.0.0' },
+        });
+        prisma.$queryRawUnsafe.mockResolvedValue([
+          {
+            bucket_start: new Date('2026-09-18T00:00:00Z'),
+            probe: '1',
+            temp_avg: 5,
+            temp_min: 4,
+            temp_max: 6,
+            humidity_avg: 50,
+            humidity_min: 45,
+            humidity_max: 55,
+            battery_min: 90,
+            door_open: true,
+            samples: 3,
+          },
+        ]);
+
+        const result = await service.getDeviceHistory(apiKey, 'SN-1', range);
+
+        const [sql, serialArg, cutoff] = prisma.$queryRawUnsafe.mock.calls[0];
+        expect(sql).toContain(`time_bucket('${bucket}'`);
+        expect(serialArg).toBe('SN-1');
+        const cutoffMs = Date.now() - (cutoff as Date).getTime();
+        expect(Math.abs(cutoffMs - days * 24 * 60 * 60 * 1000)).toBeLessThan(5000);
+        expect(result.bucketInterval).toBe(bucket);
+        expect(result.buckets).toEqual([
+          {
+            bucketStart: '2026-09-18T00:00:00.000Z',
+            probe: '1',
+            tempAvg: 5,
+            tempMin: 4,
+            tempMax: 6,
+            humidityAvg: 50,
+            humidityMin: 45,
+            humidityMax: 55,
+            batteryMin: 90,
+            doorOpen: true,
+            samples: 3,
+          },
+        ]);
+      },
+    );
+  });
+
+  describe('listDeviceTelemetry', () => {
+    const row = (sendTime: string) => ({
+      sendTime: new Date(sendTime),
+      temp: 5,
+      tempDisplay: 5,
+      humidity: 50,
+      humidityDisplay: 50,
+      tempInternal: null,
+      battery: 90,
+      plug: true,
+      door1: false,
+      door2: false,
+      door3: false,
+      internet: true,
+      extMemory: false,
+      probe: '1',
+    });
+
+    it('throws NotFoundException for a ward outside the allowlist before querying', async () => {
+      deviceService.findOne.mockResolvedValue({
+        serial: 'SN-1',
+        ward: 'OPD',
+        name: 'x',
+        status: true,
+        online: true,
+      });
+
+      await expect(service.listDeviceTelemetry(apiKey, 'SN-1', 'DAY_7', {})).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.logDays.findMany).not.toHaveBeenCalled();
+    });
+
+    it('paginates newest-first with a stable tiebreaker and a range cutoff', async () => {
+      deviceService.findOne.mockResolvedValue({
+        serial: 'SN-1',
+        ward: 'ICU',
+        name: 'F',
+        status: true,
+        online: true,
+      });
+      prisma.logDays.findMany.mockResolvedValue([row('2026-09-18T10:00:00Z')]);
+      prisma.logDays.count.mockResolvedValue(120);
+
+      const result = await service.listDeviceTelemetry(apiKey, 'SN-1', 'DAY_7', {
+        page: 3,
+        limit: 50,
+      });
+
+      const [[args]] = prisma.logDays.findMany.mock.calls;
+      expect(args.orderBy).toEqual([{ sendTime: 'desc' }, { id: 'desc' }]);
+      expect(args.skip).toBe(100);
+      expect(args.take).toBe(50);
+      const cutoffMs = Date.now() - (args.where.sendTime.gte as Date).getTime();
+      expect(Math.abs(cutoffMs - 7 * 24 * 60 * 60 * 1000)).toBeLessThan(5000);
+      expect(result).toMatchObject({ total: 120, page: 3, limit: 50 });
+      expect(result.points).toHaveLength(1);
+    });
+
+    it('applies defaults and caps limit at 200', async () => {
+      deviceService.findOne.mockResolvedValue({
+        serial: 'SN-1',
+        ward: 'ICU',
+        name: 'F',
+        status: true,
+        online: true,
+      });
+      prisma.logDays.findMany.mockResolvedValue([]);
+      prisma.logDays.count.mockResolvedValue(0);
+
+      expect((await service.listDeviceTelemetry(apiKey, 'SN-1', 'DAY_1', {})).limit).toBe(50);
+      expect(
+        (await service.listDeviceTelemetry(apiKey, 'SN-1', 'DAY_1', { limit: 9999 })).limit,
+      ).toBe(200);
     });
   });
 

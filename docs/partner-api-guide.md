@@ -28,6 +28,8 @@ package partner;
 service PartnerService {
   rpc GetDeviceSnapshot(GetDeviceSnapshotRequest) returns (GetDeviceSnapshotResponse);
   rpc ListDevicesByWard(ListDevicesByWardRequest) returns (ListDevicesByWardResponse);
+  rpc GetDeviceHistory(GetDeviceHistoryRequest) returns (GetDeviceHistoryResponse);
+  rpc ListDeviceTelemetry(ListDeviceTelemetryRequest) returns (ListDeviceTelemetryResponse);
 }
 ```
 
@@ -66,7 +68,7 @@ your key already covers.
 
 ## 4. Rate limiting
 
-Each API key is limited to **60 requests per minute**, across both RPCs combined. Going
+Each API key is limited to **60 requests per minute**, across all RPCs combined. Going
 over the limit returns:
 
 ```
@@ -174,6 +176,72 @@ grpcurl -plaintext \
   -H "x-api-key: $PARTNER_API_KEY" \
   -d '{"ward": "ICU", "page": 1, "limit": 20}' \
   smtrack-host:50051 partner.PartnerService/ListDevicesByWard
+```
+
+### `GetDeviceHistory(serial, range)` — 1 / 7 / 30 day downsampled telemetry
+
+Returns telemetry aggregated into time buckets (per probe) for the last 1, 7 or 30 days. This
+is **aggregated, not raw**: the range is an enum counted back from now (there is no free
+`from`/`to`), and each bucket carries avg/min/max instead of individual readings. Raw
+points are only available via `GetDeviceSnapshot` (last 1 hour). Same auth/ward rules as
+`GetDeviceSnapshot` — a serial outside your wards is `NOT_FOUND`.
+
+**Request** (`GetDeviceHistoryRequest`): `serial` (string, required), `range` (enum, required —
+`HISTORY_RANGE_UNSPECIFIED` or omitting it → `INVALID_ARGUMENT`).
+
+| `range` | Window | Bucket size (fixed) | Max buckets per probe* |
+|---|---|---|---|
+| `DAY_1` | last 24 h | 15 minutes | 97 |
+| `DAY_7` | last 7 days | 1 hour | 169 |
+| `DAY_30` | last 30 days | 3 hours | 241 |
+
+\* the window start rarely lands on a bucket boundary, so the oldest bucket is partial and
+counts as one extra (window ÷ bucket size, plus 1).
+
+**Response** (`GetDeviceHistoryResponse`): `device` (`DeviceMetadata`), `range`,
+`bucket_interval` (string, e.g. `"1 hour"` — the resolution you actually got), and
+`buckets` (oldest → newest; empty buckets are omitted, not zero-filled).
+
+`HistoryBucket`: `bucket_start` (ISO 8601 UTC), `probe` (channel id — one bucket per probe per
+interval), `temp_avg/min/max`, `humidity_avg/min/max`, `battery_min`, `door_open` (any of
+door1/2/3 open at any point in the bucket), `samples` (readings aggregated into the bucket).
+
+**Enum names:** load your proto with enums-as-strings so you can send/receive `"DAY_7"`
+instead of the number `2` — Node: `protoLoader.loadSync('partner.proto', { enums: String })`.
+The server is configured the same way.
+
+```bash
+grpcurl -plaintext \
+  -H "x-api-key: $PARTNER_API_KEY" \
+  -d '{"serial": "SN-00042", "range": "DAY_7"}' \
+  smtrack-host:50051 partner.PartnerService/GetDeviceHistory
+```
+
+Results are cached server-side for 60 seconds per (serial, range), so polling faster than
+that returns the same buckets.
+
+### `ListDeviceTelemetry(serial, range, page, limit)` — raw rows for a table view
+
+Raw telemetry rows for the last 1, 7 or 30 days, **newest first, paginated** — meant for table
+views. Use `GetDeviceHistory` (downsampled buckets) for charts. Same auth/ward rules and the
+same `range` enum as `GetDeviceHistory`; no free `from`/`to`.
+
+**Request** (`ListDeviceTelemetryRequest`): `serial` (required), `range` (enum, required),
+`page` (int, default 1), `limit` (int, default 50, max 200).
+
+**Response** (`ListDeviceTelemetryResponse`): `device` (`DeviceMetadata`), `range`, `points`
+(repeated `TelemetryPoint`, same fields as `GetDeviceSnapshot`, newest first), `total` (rows in
+the whole range, for computing page count), `page`, `limit` (echoes what was applied).
+
+Rows that share a `send_time` (e.g. several probes) are ordered deterministically, so paging
+through never repeats or skips a row while no new data arrives. New readings arriving between
+page requests shift later pages — page 1 first, then walk forward.
+
+```bash
+grpcurl -plaintext \
+  -H "x-api-key: $PARTNER_API_KEY" \
+  -d '{"serial": "SN-00042", "range": "DAY_7", "page": 1, "limit": 50}' \
+  smtrack-host:50051 partner.PartnerService/ListDeviceTelemetry
 ```
 
 ## 7. Getting/rotating a key

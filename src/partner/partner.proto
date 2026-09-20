@@ -13,6 +13,14 @@ service PartnerService {
   // Every device in `ward` (that the caller's key is scoped to) plus each device's single
   // latest telemetry reading — not the full history.
   rpc ListDevicesByWard(ListDevicesByWardRequest) returns (ListDevicesByWardResponse);
+
+  // Downsampled telemetry for the last 1 / 7 / 30 days (avg/min/max per time bucket, per
+  // probe) — not raw rows. Raw points are only available via GetDeviceSnapshot (last 1h).
+  rpc GetDeviceHistory(GetDeviceHistoryRequest) returns (GetDeviceHistoryResponse);
+
+  // Raw telemetry rows for the last 1 / 7 / 30 days, newest first, paginated — meant for
+  // table views (GetDeviceHistory is the downsampled variant meant for charts).
+  rpc ListDeviceTelemetry(ListDeviceTelemetryRequest) returns (ListDeviceTelemetryResponse);
 }
 
 message GetDeviceSnapshotRequest {
@@ -65,4 +73,53 @@ message ListDevicesByWardResponse {
   int32 total = 2;
   int32 page = 3;
   int32 limit = 4;
+}
+
+enum HistoryRange {
+  HISTORY_RANGE_UNSPECIFIED = 0; // rejected with INVALID_ARGUMENT
+  DAY_1 = 1;  // bucket = 15 minutes
+  DAY_7 = 2;  // bucket = 1 hour
+  DAY_30 = 3; // bucket = 3 hours
+}
+
+message GetDeviceHistoryRequest {
+  string serial = 1;
+  HistoryRange range = 2;
+}
+
+message HistoryBucket {
+  string bucket_start = 1; // ISO 8601 UTC, start of the bucket
+  string probe = 2;        // raw channel id — buckets are per probe
+  double temp_avg = 3;
+  double temp_min = 4;
+  double temp_max = 5;
+  double humidity_avg = 6;
+  double humidity_min = 7;
+  double humidity_max = 8;
+  int32 battery_min = 9;
+  bool door_open = 10;     // any of door1/2/3 was open at some point in the bucket
+  int32 samples = 11;
+}
+
+message GetDeviceHistoryResponse {
+  DeviceMetadata device = 1;
+  HistoryRange range = 2;
+  string bucket_interval = 3;         // e.g. "15 minutes"
+  repeated HistoryBucket buckets = 4; // oldest -> newest
+}
+
+message ListDeviceTelemetryRequest {
+  string serial = 1;
+  HistoryRange range = 2;
+  int32 page = 3;  // optional, default 1
+  int32 limit = 4; // optional, default 50, max 200
+}
+
+message ListDeviceTelemetryResponse {
+  DeviceMetadata device = 1;
+  HistoryRange range = 2;
+  repeated TelemetryPoint points = 3; // newest first
+  int32 total = 4;
+  int32 page = 5;
+  int32 limit = 6;
 }

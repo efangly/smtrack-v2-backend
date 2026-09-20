@@ -16,5 +16,8 @@ export const buildGrpcOptions = (config: ConfigService): GrpcOptions => ({
     package: 'partner',
     protoPath: join(__dirname, '../partner/partner.proto'),
     url: config.get<string>('grpcUrl') ?? '0.0.0.0:50051',
+    // enum ส่ง/รับเป็นชื่อ (เช่น "DAY_7") ไม่ใช่ตัวเลข — default ของ proto-loader คือตัวเลข ซึ่งทำให้
+    // handler เห็น range เป็น 2 แทน "DAY_7" (client ฝั่ง partner ควรตั้ง loader { enums: String } เหมือนกัน)
+    loader: { enums: String },
   },
 });

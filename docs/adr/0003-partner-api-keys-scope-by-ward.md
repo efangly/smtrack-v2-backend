@@ -34,3 +34,10 @@ response message and gRPC serializes an **empty** message with no error — a "s
 call that looks fine until you look at what's actually in the payload. Both `@GrpcMethod`
 handlers in `PartnerController` carry `@SkipInterceptor()` for exactly this reason; any
 future gRPC handler in this app needs it too.
+
+**Addendum — history (`GetDeviceHistory`)**: longer look-back (1/7/30 days) is served
+*downsampled* (per-probe avg/min/max buckets, fixed bucket size per range) and only via an
+enum range — deliberately not raw rows and not free `from`/`to`. 30 days of raw data is
+~8-10k rows/device (too big for one gRPC message) and arbitrary windows would let a partner
+drive arbitrary TimescaleDB scans; the enum keeps cost per call bounded and cacheable. The
+server's proto-loader is configured with `enums: String` so handlers see `"DAY_7"`, not `2`.

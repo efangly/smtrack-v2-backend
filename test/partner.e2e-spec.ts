@@ -25,6 +25,16 @@ interface PartnerClient extends grpc.Client {
     metadata: grpc.Metadata,
     callback: (err: grpc.ServiceError | null, res: unknown) => void,
   ) => void;
+  GetDeviceHistory: (
+    req: { serial: string; range?: string },
+    metadata: grpc.Metadata,
+    callback: (err: grpc.ServiceError | null, res: unknown) => void,
+  ) => void;
+  ListDeviceTelemetry: (
+    req: { serial: string; range?: string; page?: number; limit?: number },
+    metadata: grpc.Metadata,
+    callback: (err: grpc.ServiceError | null, res: unknown) => void,
+  ) => void;
   ListDevicesByWard: (
     req: { ward: string; page?: number; limit?: number },
     metadata: grpc.Metadata,
@@ -33,7 +43,9 @@ interface PartnerClient extends grpc.Client {
 }
 
 function buildClient(): PartnerClient {
-  const packageDef = protoLoader.loadSync(join(__dirname, '../src/partner/partner.proto'));
+  const packageDef = protoLoader.loadSync(join(__dirname, '../src/partner/partner.proto'), {
+    enums: String,
+  });
   const proto = grpc.loadPackageDefinition(packageDef) as unknown as {
     partner: { PartnerService: new (url: string, creds: grpc.ChannelCredentials) => PartnerClient };
   };
@@ -94,6 +106,27 @@ describe('Partner API (e2e, gRPC)', () => {
           internet: true,
           probe: '1',
           battery: 90,
+        })),
+        deviceId,
+      ),
+    });
+
+    // history: 2 / 5 / 20 / 40 วันก่อน (door1 เปิดเฉพาะแถว 5 วัน) — DAY_1 ต้องเห็นแค่ 5 แถวเดิม, DAY_30 ตัดแถว 40 วันทิ้ง
+    const DAY = 24 * 60 * 60 * 1000;
+    await prisma.logDays.createMany({
+      data: withDeviceId(
+        [2, 5, 20, 40].map((daysAgo) => ({
+          serial,
+          temp: 6,
+          tempDisplay: 6,
+          humidity: 60,
+          humidityDisplay: 60,
+          sendTime: new Date(now - daysAgo * DAY),
+          plug: true,
+          door1: daysAgo === 5,
+          internet: true,
+          probe: '1',
+          battery: 80,
         })),
         deviceId,
       ),
@@ -178,6 +211,108 @@ describe('Partner API (e2e, gRPC)', () => {
       expect(response?.devices[0].device.serial).toBe(serial);
       // ต้องเป็นจุดล่าสุด (10 นาทีก่อน) ไม่ใช่จุดอื่น
       expect(response?.devices[0].latest).toBeDefined();
+    });
+  });
+
+  describe('GetDeviceHistory', () => {
+    type History = {
+      device: { serial: string };
+      range: string;
+      bucketInterval: string;
+      buckets: { samples: number; doorOpen?: boolean; batteryMin: number }[];
+    };
+    const history = (req: { serial: string; range?: string }, key?: string) =>
+      call<History>(client.GetDeviceHistory.bind(client), req, key);
+    const totalSamples = (h?: History) => (h?.buckets ?? []).reduce((n, b) => n + b.samples, 0);
+
+    it('ปฏิเสธเมื่อไม่แนบ x-api-key', async () => {
+      const { error } = await history({ serial, range: 'DAY_7' });
+      expect(error?.code).toBe(grpc.status.UNAUTHENTICATED);
+    });
+
+    it('ไม่ระบุ range ตอบ INVALID_ARGUMENT', async () => {
+      const { error } = await history({ serial }, rawKey);
+      expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+    });
+
+    it('ward ที่ไม่อยู่ใน allowlist ตอบ NOT_FOUND', async () => {
+      const { error } = await history(
+        { serial: 'SOME-OTHER-SERIAL-NOT-OWNED', range: 'DAY_7' },
+        rawKey,
+      );
+      expect(error?.code).toBe(grpc.status.NOT_FOUND);
+    });
+
+    it('DAY_1: เฉพาะ 5 แถวเดิมที่อยู่ในช่วง 1 วัน, bucket 15 นาที', async () => {
+      const { response, error } = await history({ serial, range: 'DAY_1' }, rawKey);
+      expect(error).toBeUndefined();
+      expect(response?.bucketInterval).toBe('15 minutes');
+      expect(response?.range).toBe('DAY_1');
+      expect(totalSamples(response)).toBe(5);
+    });
+
+    it('DAY_7: รวมแถว 2 และ 5 วันก่อน (รวม 7) และ door_open จากแถว 5 วัน', async () => {
+      const { response } = await history({ serial, range: 'DAY_7' }, rawKey);
+      expect(response?.bucketInterval).toBe('1 hour');
+      expect(totalSamples(response)).toBe(7);
+      expect(response?.buckets.some((b) => b.doorOpen)).toBe(true);
+    });
+
+    it('DAY_30: รวมแถว 20 วันก่อน (รวม 8) แต่ตัดแถว 40 วันทิ้ง', async () => {
+      const { response } = await history({ serial, range: 'DAY_30' }, rawKey);
+      expect(response?.bucketInterval).toBe('3 hours');
+      expect(totalSamples(response)).toBe(8);
+    });
+  });
+
+  describe('ListDeviceTelemetry', () => {
+    type Table = {
+      total: number;
+      page: number;
+      limit: number;
+      range: string;
+      points: { sendTime: string }[];
+    };
+    const list = (
+      req: { serial: string; range?: string; page?: number; limit?: number },
+      key?: string,
+    ) => call<Table>(client.ListDeviceTelemetry.bind(client), req, key);
+
+    it('ปฏิเสธเมื่อไม่แนบ x-api-key', async () => {
+      const { error } = await list({ serial, range: 'DAY_7' });
+      expect(error?.code).toBe(grpc.status.UNAUTHENTICATED);
+    });
+
+    it('ไม่ระบุ range ตอบ INVALID_ARGUMENT', async () => {
+      const { error } = await list({ serial }, rawKey);
+      expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+    });
+
+    it('ward ที่ไม่อยู่ใน allowlist ตอบ NOT_FOUND', async () => {
+      const { error } = await list(
+        { serial: 'SOME-OTHER-SERIAL-NOT-OWNED', range: 'DAY_7' },
+        rawKey,
+      );
+      expect(error?.code).toBe(grpc.status.NOT_FOUND);
+    });
+
+    it('DAY_1 / DAY_7 / DAY_30 นับ total ตามช่วง (5 / 7 / 8)', async () => {
+      const totals = await Promise.all(
+        ['DAY_1', 'DAY_7', 'DAY_30'].map((range) => list({ serial, range }, rawKey)),
+      );
+      expect(totals.map((t) => t.response?.total)).toEqual([5, 7, 8]);
+    });
+
+    it('แบ่งหน้าเรียงใหม่→เก่า ไม่ซ้ำ ไม่ตกหล่น', async () => {
+      const p1 = await list({ serial, range: 'DAY_7', page: 1, limit: 3 }, rawKey);
+      const p2 = await list({ serial, range: 'DAY_7', page: 2, limit: 3 }, rawKey);
+      const p3 = await list({ serial, range: 'DAY_7', page: 3, limit: 3 }, rawKey);
+
+      expect([p1, p2, p3].map((p) => p.response?.points.length)).toEqual([3, 3, 1]);
+      expect(p1.response).toMatchObject({ total: 7, page: 1, limit: 3, range: 'DAY_7' });
+      const times = [p1, p2, p3].flatMap((p) => p.response?.points.map((x) => x.sendTime) ?? []);
+      expect(new Set(times).size).toBe(7);
+      expect([...times].sort().reverse()).toEqual(times);
     });
   });
 

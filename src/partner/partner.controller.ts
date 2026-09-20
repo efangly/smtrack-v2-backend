@@ -1,7 +1,7 @@
 import { Controller, UseFilters, UseGuards } from '@nestjs/common';
 import { GrpcMethod, RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
-import { PartnerService } from './partner.service';
+import { HistoryRangeKey, PartnerService } from './partner.service';
 import { GrpcApiKeyAuthGuard, WithPartnerApiKey } from './partner-grpc.guard';
 import { GrpcPartnerRateLimitGuard } from './partner-grpc-rate-limit.guard';
 import { PartnerGrpcExceptionFilter } from './partner-grpc-exception.filter';
@@ -9,6 +9,19 @@ import { SkipInterceptor } from '../common/decorators/skip-interceptor.decorator
 
 interface GetDeviceSnapshotRequest {
   serial: string;
+}
+
+interface GetDeviceHistoryRequest {
+  serial: string;
+  // proto-loader ส่ง enum มาเป็นชื่อ (string) เป็น default — เช่น "DAY_7"
+  range?: string;
+}
+
+const HISTORY_RANGE_KEYS: readonly string[] = ['DAY_1', 'DAY_7', 'DAY_30'];
+
+interface ListDeviceTelemetryRequest extends GetDeviceHistoryRequest {
+  page?: number;
+  limit?: number;
 }
 
 interface ListDevicesByWardRequest {
@@ -58,6 +71,85 @@ export class PartnerController {
         apiKey.id,
         { serial: request.serial },
         'partner.PartnerService/GetDeviceSnapshot',
+        statusCode,
+      );
+    }
+  }
+
+  @SkipInterceptor()
+  @GrpcMethod('PartnerService', 'GetDeviceHistory')
+  async getDeviceHistory(request: GetDeviceHistoryRequest & WithPartnerApiKey) {
+    if (!request.serial) {
+      throw new RpcException({ code: status.INVALID_ARGUMENT, message: 'serial is required' });
+    }
+    if (!request.range || !HISTORY_RANGE_KEYS.includes(request.range)) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: 'range must be one of DAY_1, DAY_7, DAY_30',
+      });
+    }
+    const range = request.range as HistoryRangeKey;
+    const apiKey = request.__partnerApiKey!;
+    let statusCode: number = status.OK;
+    try {
+      const { device, bucketInterval, buckets } = await this.partnerService.getDeviceHistory(
+        apiKey,
+        request.serial,
+        range,
+      );
+      return { device, range, bucketInterval, buckets };
+    } catch (err) {
+      statusCode = errorStatusCode(err);
+      throw err;
+    } finally {
+      void this.partnerService.logRequest(
+        apiKey.id,
+        { serial: request.serial },
+        'partner.PartnerService/GetDeviceHistory',
+        statusCode,
+      );
+    }
+  }
+
+  @SkipInterceptor()
+  @GrpcMethod('PartnerService', 'ListDeviceTelemetry')
+  async listDeviceTelemetry(request: ListDeviceTelemetryRequest & WithPartnerApiKey) {
+    if (!request.serial) {
+      throw new RpcException({ code: status.INVALID_ARGUMENT, message: 'serial is required' });
+    }
+    if (!request.range || !HISTORY_RANGE_KEYS.includes(request.range)) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: 'range must be one of DAY_1, DAY_7, DAY_30',
+      });
+    }
+    const range = request.range as HistoryRangeKey;
+    const apiKey = request.__partnerApiKey!;
+    let statusCode: number = status.OK;
+    try {
+      const result = await this.partnerService.listDeviceTelemetry(apiKey, request.serial, range, {
+        page: request.page,
+        limit: request.limit,
+      });
+      return {
+        device: result.device,
+        range,
+        points: result.points.map((point) => ({
+          ...point,
+          sendTime: point.sendTime.toISOString(),
+        })),
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+      };
+    } catch (err) {
+      statusCode = errorStatusCode(err);
+      throw err;
+    } finally {
+      void this.partnerService.logRequest(
+        apiKey.id,
+        { serial: request.serial },
+        'partner.PartnerService/ListDeviceTelemetry',
         statusCode,
       );
     }
