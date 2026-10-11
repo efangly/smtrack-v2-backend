@@ -18,6 +18,7 @@ describe('NotificationService', () => {
       update: jest.Mock;
       updateMany: jest.Mock;
       count: jest.Mock;
+      findMany: jest.Mock;
     };
   };
   let redis: { getOrSet: jest.Mock; del: jest.Mock };
@@ -39,6 +40,7 @@ describe('NotificationService', () => {
           .mockImplementation(({ data }) => Promise.resolve({ ...baseNotif, ...data })),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
       },
     };
     redis = {
@@ -269,6 +271,34 @@ describe('NotificationService', () => {
         where: { device: { ward: 'OPD' }, isRead: false },
       });
       expect(count).toBe(7);
+    });
+  });
+
+  describe('findCount (dashboard)', () => {
+    it('นับเฉพาะ notification ย้อนหลัง 24 ชม. และคง ward scope', async () => {
+      prisma.notifications.findMany.mockResolvedValue([
+        { message: 'SD/OFF' },
+        { message: 'AC/OFF' },
+        { message: 'INTERNET/OFF' },
+        { message: 'X1/TEMP/OVER' },
+        { message: 'X1/TEMP/LOWER' },
+        { message: 'X1/1/ON' },
+      ]);
+      const before = Date.now();
+
+      const result = await service.findCount({
+        id: 'u1',
+        name: 'user',
+        role: 'USER',
+        wardId: 'OPD',
+      } as never);
+
+      const arg = prisma.notifications.findMany.mock.calls[0][0];
+      expect(arg.where.device).toEqual({ ward: 'OPD' });
+      const from: Date = arg.where.createAt.gte;
+      expect(Math.abs(before - from.getTime() - 24 * 60 * 60 * 1000)).toBeLessThan(5000);
+      expect(arg.select).toEqual({ message: true });
+      expect(result).toEqual({ temp: 2, door: 1, internet: 1, plug: 1, sdcard: 1 });
     });
   });
 });

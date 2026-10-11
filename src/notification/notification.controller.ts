@@ -53,6 +53,7 @@ export class NotificationController {
     return this.notificationService.findAll(query, req.user);
   }
 
+  // สรุปจำนวนเฉพาะ 24 ชม.ล่าสุด
   // ต้องมาก่อน :serial ไม่งั้น 'dashboard' จะถูกจับเป็นค่า serial
   @Get('dashboard/count')
   @UseGuards(JwtAuthGuard)

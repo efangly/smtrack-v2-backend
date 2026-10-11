@@ -16,6 +16,7 @@ import { NotificationQueryDto } from './dto/query-notification.dto';
 import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 import { classifyNotification } from './notification-classifier.util';
+import { resolveRange, TimeRange } from '../common/time/range.util';
 import { FCM_PUSH_PATTERN } from '../config/rabbitmq.config';
 
 const bySerialKey = (serial: string) => `notification:${serial}`;
@@ -223,44 +224,50 @@ export class NotificationService {
     return toPaginated(data, total, query);
   }
 
+  /** สรุป dashboard เฉพาะ notification ย้อนหลัง 24 ชม. (rolling window) — ไม่นับทั้ง DB */
   async findCount(user: JwtPayloadDto): Promise<NotificationDashboardCount> {
     const { conditions, key } = this.findCondition(user);
-    const notification = await this.redis.getOrSet(`count-${key}`, 30, () =>
-      this.prisma.notifications.findMany({ where: conditions, orderBy: { createAt: 'desc' } }),
-    );
+    // cache เฉพาะผลที่นับเสร็จแล้ว (5 ตัวเลข) แทนการ cache แถวทั้งหมด; window เลื่อนตามเวลา + TTL สั้น
+    return this.redis.getOrSet(`count-${key}`, 30, async () => {
+      const { from } = resolveRange(TimeRange.DAY);
+      const notification = await this.prisma.notifications.findMany({
+        where: { ...conditions, createAt: { gte: from } },
+        select: { message: true },
+      });
 
-    const counts: NotificationDashboardCount = {
-      temp: 0,
-      door: 0,
-      internet: 0,
-      plug: 0,
-      sdcard: 0,
-    };
-    // group ด้วย classifier ตัวเดียวกับที่ persist ตอน create() — แหล่งความจริงเดียว
-    // (เดิม parse message แยกกันคนละจุด ทำให้ logic ดริฟท์ได้)
-    for (const n of notification) {
-      const { category } = classifyNotification(n.message);
-      switch (category) {
-        case 'SDCARD':
-          counts.sdcard++;
-          break;
-        case 'PLUG':
-          counts.plug++;
-          break;
-        case 'INTERNET':
-          counts.internet++;
-          break;
-        case 'TEMP':
-          counts.temp++;
-          break;
-        case 'DOOR':
-          counts.door++;
-          break;
-        default:
-          break;
+      const counts: NotificationDashboardCount = {
+        temp: 0,
+        door: 0,
+        internet: 0,
+        plug: 0,
+        sdcard: 0,
+      };
+      // group ด้วย classifier ตัวเดียวกับที่ persist ตอน create() — แหล่งความจริงเดียว
+      // (เดิม parse message แยกกันคนละจุด ทำให้ logic ดริฟท์ได้)
+      for (const n of notification) {
+        const { category } = classifyNotification(n.message);
+        switch (category) {
+          case 'SDCARD':
+            counts.sdcard++;
+            break;
+          case 'PLUG':
+            counts.plug++;
+            break;
+          case 'INTERNET':
+            counts.internet++;
+            break;
+          case 'TEMP':
+            counts.temp++;
+            break;
+          case 'DOOR':
+            counts.door++;
+            break;
+          default:
+            break;
+        }
       }
-    }
-    return counts;
+      return counts;
+    });
   }
 
   /** unread count แบบ persistent (ต่างจาก findCount ที่นับตาม type/message) — ward-scoped เหมือนกัน */
