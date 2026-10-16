@@ -20,6 +20,7 @@ describe('NotificationService', () => {
       count: jest.Mock;
       findMany: jest.Mock;
     };
+    devices: { findUnique: jest.Mock };
   };
   let redis: { getOrSet: jest.Mock; del: jest.Mock };
   let mqtt: { publishNotification: jest.Mock };
@@ -42,6 +43,7 @@ describe('NotificationService', () => {
         count: jest.fn().mockResolvedValue(0),
         findMany: jest.fn().mockResolvedValue([]),
       },
+      devices: { findUnique: jest.fn().mockResolvedValue({ name: 'Fridge A' }) },
     };
     redis = {
       getOrSet: jest.fn().mockImplementation((_key, _ttl, factory) => factory()),
@@ -143,7 +145,7 @@ describe('NotificationService', () => {
     // และแนบ unreadCount (ของ ward นี้) เข้าไปเป็น field เพิ่มเติมบน payload เดิม
     expect(sse.broadcast).toHaveBeenCalledWith(
       'notification',
-      { ...baseNotif, unreadCount: 0 },
+      { ...baseNotif, deviceName: 'Fridge A', unreadCount: 0 },
       'OPD',
     );
     expect(rabbitmq.emit).toHaveBeenCalledWith(

@@ -124,7 +124,16 @@ export class NotificationService {
           // (ไม่ทำลาย consumer เดิมที่อ่านแค่ field ของ Notifications ตรง ๆ) เพื่อให้ dashboard
           // อัปเดตตัวเลขแจ้งเตือนใหม่แบบ real-time โดยไม่ต้องยิง fetch แยก
           const unreadCount = await this.countUnread(ward);
-          this.sseService.broadcast('notification', { ...notification, unreadCount }, ward);
+          // แนบชื่อ device (Devices.name) ไปด้วยเพื่อให้ frontend แสดงตอนมีการแจ้งเตือนได้ทันที
+          const device = await this.prisma.devices.findUnique({
+            where: { serial: notification.serial },
+            select: { name: true },
+          });
+          this.sseService.broadcast(
+            'notification',
+            { ...notification, deviceName: device?.name ?? null, unreadCount },
+            ward,
+          );
           this.metrics.recordNotificationDelivery('sse', 'success');
           return true;
         } catch (err) {
