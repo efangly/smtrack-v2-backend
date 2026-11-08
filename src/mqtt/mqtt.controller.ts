@@ -18,6 +18,17 @@ import { AppEvents } from '../common/events/app-events';
 const REALTIME_TOPIC = process.env.MQTT_REALTIME_TOPIC || 'devices/+/telemetry';
 
 /**
+ * subscribe log แบบ shared subscription (MQTT 5 / mosquitto ≥2): broker ส่งแต่ละ message ให้
+ * replica เดียวในกลุ่ม — รันหลาย replica แล้วไม่ insert/แจ้งเตือนซ้ำ (Nest ตัด `$share/<group>/` ออกตอน match)
+ * ตั้ง MQTT_SHARED_GROUP=none เพื่อปิด เช่นกับ broker ที่ไม่รองรับ
+ *
+ * realtime ไม่ share โดยตั้งใจ: ไม่บันทึก DB และทุก replica ต้องได้ เพื่อ push ให้ SSE client ของตัวเอง
+ */
+const LOG_GROUP = process.env.MQTT_SHARED_GROUP || 'smtrack-ingest';
+const LOG_SUBSCRIPTION =
+  LOG_GROUP === 'none' ? 'devices/+/log' : `$share/${LOG_GROUP}/devices/+/log`;
+
+/**
  * MQTT message handlers — หน้าที่แค่รับ/แปลง payload แล้วเรียก service
  * (business logic อยู่ใน service เท่านั้น ตาม convention)
  */
@@ -33,7 +44,7 @@ export class MqttController {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  @EventPattern('devices/+/log')
+  @EventPattern(LOG_SUBSCRIPTION)
   async handleDeviceLog(
     @Payload(new ValidationPipe({ transform: true, whitelist: true }))
     payload: CreateTelemetryDto,

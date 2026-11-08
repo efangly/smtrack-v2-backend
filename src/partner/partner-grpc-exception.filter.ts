@@ -14,7 +14,7 @@ import { Observable, throwError } from 'rxjs';
 /**
  * services เดิมยัง throw Nest HttpException ธรรมดา (NotFoundException/BadRequestException/
  * UnauthorizedException) เหมือนตอนเป็น REST — ไม่แก้ service ให้รู้จัก gRPC status ตรง ๆ
- * เพื่อให้ logic เดิม (assertWardAllowed ฯลฯ) reuse ได้ ที่นี่จุดเดียวคือจุดแปลงเป็น
+ * เพื่อให้ logic เดิม (assertTenantAllowed ฯลฯ) reuse ได้ ที่นี่จุดเดียวคือจุดแปลงเป็น
  * grpc.status ให้ตรงกับ docs/partner-api-guide.md
  */
 @Catch()

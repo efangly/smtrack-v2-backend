@@ -6,10 +6,10 @@ export class CreatePartnerApiKeyDto {
   @MaxLength(150)
   name: string;
 
-  /** allowlist ของ ward (Devices.ward) ที่ key นี้เข้าถึงได้ — ดู ADR-0003 */
+  /** allowlist ของ tenant (Devices.tenantId) ที่ key นี้เข้าถึงได้ — ดู ADR-0003/0004 */
   @IsArray()
   @ArrayMinSize(1)
   @ArrayUnique()
   @IsString({ each: true })
-  wards: string[];
+  tenantIds: string[];
 }

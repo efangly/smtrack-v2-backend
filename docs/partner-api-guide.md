@@ -9,6 +9,12 @@ else (including admin key management, see §7) is REST/MQTT/RabbitMQ. If you don
 API key yet, contact your SMtrack admin — there is no self-service sign-up, keys are issued
 manually.
 
+> **Breaking change (tenant scope):** `ListDevicesByWard(ward)` was replaced by
+> `ListDevicesByTenant(tenant_id)` — keys are now scoped to whole organisations (tenants)
+> instead of wards. An existing key was converted to the tenant(s) its wards belong to, so it
+> now sees every device of those tenants. Ask your admin for your tenant ID(s). A client still
+> calling the old RPC gets `UNIMPLEMENTED` — regenerate your stubs from the current proto.
+
 ## 1. Connection
 
 ```
@@ -27,7 +33,7 @@ package partner;
 
 service PartnerService {
   rpc GetDeviceSnapshot(GetDeviceSnapshotRequest) returns (GetDeviceSnapshotResponse);
-  rpc ListDevicesByWard(ListDevicesByWardRequest) returns (ListDevicesByWardResponse);
+  rpc ListDevicesByTenant(ListDevicesByTenantRequest) returns (ListDevicesByTenantResponse);
   rpc GetDeviceHistory(GetDeviceHistoryRequest) returns (GetDeviceHistoryResponse);
   rpc ListDeviceTelemetry(ListDeviceTelemetryRequest) returns (ListDeviceTelemetryResponse);
 }
@@ -44,27 +50,27 @@ Every call must carry your API key as gRPC **metadata** (not a message field):
 x-api-key: pk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-- Your key only grants access to a specific, pre-approved list of **wards** (departments/
-  units — see §3). It does not grant access to every device in the system, and it is not
-  scoped by individual device — any device that belongs to (or is later moved into) an
-  allowed ward becomes visible automatically.
+- Your key only grants access to a specific, pre-approved list of **tenants** (customer
+  organisations — see §3). It does not grant access to every device in the system, and it is
+  not scoped by individual device — any device that belongs to (or is later moved into) an
+  allowed tenant becomes visible automatically.
 - Keys don't expire automatically. If a key needs rotating or revoking, contact your admin
   — a revoked key stops working immediately.
-- **Keep your key secret.** Anyone with it can read data for every device in every ward
-  it's scoped to, within your rate limit.
+- **Keep your key secret.** Anyone with it can read data for every device in every
+  tenant it's scoped to, within your rate limit.
 
-## 3. What "ward" means here, and what "serial" means in `GetDeviceSnapshot`
+## 3. What "tenant" means here, and what "serial" means in `GetDeviceSnapshot`
 
-A **ward** is the department/unit a device is installed in (e.g. an ICU or OPD). Your key
-lists the wards it can see. `ListDevicesByWard` takes a ward directly; `GetDeviceSnapshot`
-takes a device **serial** — access is checked by resolving that device's ward and
-confirming it's one of yours, not by the serial itself being on any list.
+A **tenant** is the customer organisation a device belongs to (a hospital, laboratory,
+factory, …). Your key lists the tenant IDs it can see. `ListDevicesByTenant` takes a tenant
+ID directly; `GetDeviceSnapshot` takes a device **serial** — access is checked by resolving that
+device's tenant and confirming it's one of yours, not by the serial itself being on any list.
 
 The `serial` identifies the **physical hardware unit** (the box), not a room/location. If a
 unit is ever physically swapped out for a different one at the same install location, its
 serial number changes — you're not responsible for tracking that yourself here (unlike the
-old per-serial model), since access is ward-based; the new box just needs to be in a ward
-your key already covers.
+old per-serial model), since access is tenant-based; the new box just needs to be in a
+tenant your key already covers.
 
 ## 4. Rate limiting
 
@@ -86,8 +92,8 @@ here):
 | gRPC status | Code | Meaning | Common cause |
 |---|---|---|---|
 | `UNAUTHENTICATED` | 16 | Missing, invalid, or revoked `x-api-key` metadata |
-| `NOT_FOUND` | 5 | The serial/ward doesn't exist, **or** it exists but isn't in your key's allowed wards — deliberately indistinguishable so a wrong/guessed serial can't be used to probe what exists |
-| `INVALID_ARGUMENT` | 3 | Empty `serial`/`ward`, or a bad `page`/`limit` |
+| `NOT_FOUND` | 5 | The serial/tenant doesn't exist, **or** it exists but isn't in your key's allowed tenants — deliberately indistinguishable so a wrong/guessed serial can't be used to probe what exists |
+| `INVALID_ARGUMENT` | 3 | Empty `serial`/`tenant_id`, or a bad `page`/`limit` |
 | `RESOURCE_EXHAUSTED` | 8 | Over 60 requests/minute for this key |
 
 ## 6. RPCs
@@ -96,7 +102,7 @@ here):
 
 Returns a curated device snapshot plus **the last hour** of telemetry, always — there is no
 way to request a different or wider window; this RPC is intentionally fixed-window, not
-paginated history. Internal/location fields (which ward, physical position, etc.) are
+paginated history. Internal/location fields (which tenant/department, physical position, etc.) are
 excluded from `DeviceMetadata` on purpose — this call never tells you *where* a device is,
 only its own state.
 
@@ -150,23 +156,23 @@ grpcurl -plaintext \
 
 ---
 
-### `ListDevicesByWard(ward, page, limit)` — every device in a ward + its latest reading
+### `ListDevicesByTenant(tenant_id, page, limit)` — every device of a tenant + its latest reading
 
-Returns every device in `ward` (paginated), each with its metadata plus its **single most
+Returns every device of `tenant_id` (paginated), each with its metadata plus its **single most
 recent** telemetry reading — not the full history. If you need history for a specific
 device, follow up with `GetDeviceSnapshot`.
 
-**Request** (`ListDevicesByWardRequest`): `ward` (string, required), `page` (int, default
+**Request** (`ListDevicesByTenantRequest`): `tenant_id` (string, required), `page` (int, default
 1), `limit` (int, default 20, max 100).
 
-**Response** (`ListDevicesByWardResponse`):
+**Response** (`ListDevicesByTenantResponse`):
 
 | Field | Type | Notes |
 |---|---|---|
 | `devices` | repeated `DeviceWithLatestReading` | |
 | `devices[].device` | `DeviceMetadata` | same shape as above |
 | `devices[].latest` | `TelemetryPoint`, optional | **absent** (not a zero value) if the device has no telemetry yet |
-| `total` | int | total devices in the ward, for pagination |
+| `total` | int | total devices of the tenant, for pagination |
 | `page` / `limit` | int | echoes back what was applied |
 
 **Example**:
@@ -174,8 +180,8 @@ device, follow up with `GetDeviceSnapshot`.
 ```bash
 grpcurl -plaintext \
   -H "x-api-key: $PARTNER_API_KEY" \
-  -d '{"ward": "ICU", "page": 1, "limit": 20}' \
-  smtrack-host:50051 partner.PartnerService/ListDevicesByWard
+  -d '{"tenant_id": "<your-tenant-id>", "page": 1, "limit": 20}' \
+  smtrack-host:50051 partner.PartnerService/ListDevicesByTenant
 ```
 
 ### `GetDeviceHistory(serial, range)` — 1 / 7 / 30 day downsampled telemetry
@@ -183,8 +189,8 @@ grpcurl -plaintext \
 Returns telemetry aggregated into time buckets (per probe) for the last 1, 7 or 30 days. This
 is **aggregated, not raw**: the range is an enum counted back from now (there is no free
 `from`/`to`), and each bucket carries avg/min/max instead of individual readings. Raw
-points are only available via `GetDeviceSnapshot` (last 1 hour). Same auth/ward rules as
-`GetDeviceSnapshot` — a serial outside your wards is `NOT_FOUND`.
+points are only available via `GetDeviceSnapshot` (last 1 hour). Same auth/tenant rules as
+`GetDeviceSnapshot` — a serial outside your tenants is `NOT_FOUND`.
 
 **Request** (`GetDeviceHistoryRequest`): `serial` (string, required), `range` (enum, required —
 `HISTORY_RANGE_UNSPECIFIED` or omitting it → `INVALID_ARGUMENT`).
@@ -223,7 +229,7 @@ that returns the same buckets.
 ### `ListDeviceTelemetry(serial, range, page, limit)` — raw rows for a table view
 
 Raw telemetry rows for the last 1, 7 or 30 days, **newest first, paginated** — meant for table
-views. Use `GetDeviceHistory` (downsampled buckets) for charts. Same auth/ward rules and the
+views. Use `GetDeviceHistory` (downsampled buckets) for charts. Same auth/tenant rules and the
 same `range` enum as `GetDeviceHistory`; no free `from`/`to`.
 
 **Request** (`ListDeviceTelemetryRequest`): `serial` (required), `range` (enum, required),
@@ -248,8 +254,8 @@ grpcurl -plaintext \
 
 Key management stays REST (internal, admin-only — not part of this gRPC surface):
 
-1. Tell your SMtrack admin which **wards** you need access to.
-2. They issue a key scoped to exactly those wards (`POST /admin/partner-keys` with
-   `{ "name": "...", "wards": ["ICU", "OPD"] }`) and hand you the plaintext value **once** —
+1. Tell your SMtrack admin which **tenants** (organisations) you need access to.
+2. They issue a key scoped to exactly those tenants (`POST /admin/partner-keys` with
+   `{ "name": "...", "tenantIds": ["<tenant-id>"] }`) and hand you the plaintext value **once** —
    it is never shown again, so store it securely on your side immediately.
 3. If you lose it or suspect it's leaked, ask your admin to revoke it and issue a new one.

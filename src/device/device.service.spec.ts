@@ -1,3 +1,4 @@
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeviceService } from './device.service';
@@ -7,6 +8,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppEvents } from '../common/events/app-events';
 import { DeviceChangedEvent } from '../common/events/device-changed.event';
+import { AccessScope } from '../common/auth/access-scope';
+
+const GLOBAL: AccessScope = { kind: 'GLOBAL' };
 
 describe('DeviceService — device.changed event', () => {
   let service: DeviceService;
@@ -65,7 +69,7 @@ describe('DeviceService — device.changed event', () => {
     prisma.configs.create.mockResolvedValue(config);
     prisma.probes.create.mockResolvedValue(probe);
 
-    await service.create({ staticName: 'OPD-01' } as never, undefined, actor);
+    await service.create({ staticName: 'OPD-01' } as never, GLOBAL, undefined, actor);
 
     const [name, payload] = emitter.emit.mock.calls[0] as [string, DeviceChangedEvent];
     expect(name).toBe(AppEvents.DEVICE_CHANGED);
@@ -78,7 +82,7 @@ describe('DeviceService — device.changed event', () => {
     prisma.configs.create.mockResolvedValue(config);
     prisma.probes.create.mockResolvedValue(probe);
 
-    await service.create({ staticName: 'OPD-01' } as never);
+    await service.create({ staticName: 'OPD-01' } as never, GLOBAL);
 
     const [, payload] = emitter.emit.mock.calls[0] as [string, DeviceChangedEvent];
     expect(payload.actor).toBeUndefined();
@@ -89,7 +93,7 @@ describe('DeviceService — device.changed event', () => {
     prisma.configs.create.mockResolvedValue(config);
     prisma.probes.create.mockResolvedValue(probe);
 
-    await service.create({ staticName: 'OPD-01' } as never, undefined, actor);
+    await service.create({ staticName: 'OPD-01' } as never, GLOBAL, undefined, actor);
 
     expect(prisma.configs.create).toHaveBeenCalledWith({ data: { deviceId: device.id } });
     expect(prisma.probes.create).toHaveBeenCalledWith({ data: { deviceId: device.id } });
@@ -101,10 +105,10 @@ describe('DeviceService — device.changed event', () => {
   });
 
   it('update ส่ง actor เข้า event device.changed ให้ audit ตามได้ว่าใครแก้ไข', async () => {
-    prisma.devices.findUnique.mockResolvedValue({ ...device, ward: 'OLD-WARD' });
-    prisma.devices.update.mockResolvedValue({ ...device, ward: 'NEW-WARD' });
+    prisma.devices.findUnique.mockResolvedValue({ ...device, departmentId: 'OLD-DEPT' });
+    prisma.devices.update.mockResolvedValue({ ...device, departmentId: 'NEW-DEPT' });
 
-    await service.update('SN-1', { ward: 'NEW-WARD' } as never, undefined, actor);
+    await service.update('SN-1', { departmentId: 'NEW-DEPT' } as never, GLOBAL, undefined, actor);
 
     const [name, payload] = emitter.emit.mock.calls[0] as [string, DeviceChangedEvent];
     expect(name).toBe(AppEvents.DEVICE_CHANGED);
@@ -116,9 +120,68 @@ describe('DeviceService — device.changed event', () => {
     prisma.devices.findUnique.mockResolvedValue(device);
     prisma.devices.update.mockResolvedValue(device);
 
-    await service.update('SN-1', {} as never, undefined, actor);
+    await service.update('SN-1', {} as never, GLOBAL, undefined, actor);
 
     expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  describe('สิทธิ์ตาม tenant/department', () => {
+    const admin: AccessScope = { kind: 'TENANT', tenantId: 'T1', departments: 'ALL' };
+    const someDepts: AccessScope = { kind: 'TENANT', tenantId: 'T1', departments: ['OPD'] };
+
+    it('create ใน tenant อื่นถูกปฏิเสธ 403 ก่อนเขียนอะไร', async () => {
+      await expect(
+        service.create({ staticName: 'X', tenantId: 'T2', departmentId: 'OPD' } as never, admin),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.devices.create).not.toHaveBeenCalled();
+    });
+
+    it('create ใน department ที่ตัวเองไม่ได้รับสิทธิ์ถูกปฏิเสธ 403', async () => {
+      await expect(
+        service.create(
+          { staticName: 'X', tenantId: 'T1', departmentId: 'ICU' } as never,
+          someDepts,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('update อุปกรณ์ของ tenant อื่นตอบ 404 เหมือนไม่มีอยู่จริง', async () => {
+      prisma.devices.findUnique.mockResolvedValue({
+        ...device,
+        tenantId: 'T2',
+        departmentId: 'OPD',
+      });
+
+      await expect(service.update('SN-1', {} as never, admin)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.devices.update).not.toHaveBeenCalled();
+    });
+
+    it('update ย้ายอุปกรณ์ออกไป tenant อื่นถูกปฏิเสธ 403', async () => {
+      prisma.devices.findUnique.mockResolvedValue({
+        ...device,
+        tenantId: 'T1',
+        departmentId: 'OPD',
+      });
+
+      await expect(
+        service.update('SN-1', { tenantId: 'T2' } as never, admin),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.devices.update).not.toHaveBeenCalled();
+    });
+
+    it('findByStaticName ของ tenant อื่นตอบ 404', async () => {
+      prisma.devices.findUnique.mockResolvedValue({
+        ...device,
+        tenantId: 'T2',
+        departmentId: 'OPD',
+      });
+
+      await expect(service.findByStaticName('OPD-01', admin)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
   });
 
   it('setOnline emit device.changed พร้อม device ทั้งก้อน เมื่อสถานะเปลี่ยนจริง', async () => {
@@ -193,26 +256,29 @@ describe('DeviceService — findAll pagination', () => {
     service = module.get(DeviceService);
   });
 
-  it('ไม่มี ward filter → count ทั้งตาราง ไม่ผ่าน where', async () => {
+  it('ไม่มี department filter → count ทั้งตาราง ไม่ผ่าน where', async () => {
     prisma.devices.findMany.mockResolvedValue([]);
     prisma.devices.count.mockResolvedValue(50);
 
-    const result = await service.findAll({ page: 1, limit: 20 } as never);
+    const result = await service.findAll({ page: 1, limit: 20 } as never, GLOBAL);
 
     expect(prisma.devices.count).toHaveBeenCalledWith({ where: undefined });
     expect(result.meta.total).toBe(50);
     expect(result.meta.totalPages).toBe(3);
   });
 
-  it('มี ward filter → findMany และ count ต้องใช้ where เดียวกัน ไม่ใช่ count เต็มตาราง', async () => {
+  it('มี department filter → findMany และ count ต้องใช้ where เดียวกัน ไม่ใช่ count เต็มตาราง', async () => {
     prisma.devices.findMany.mockResolvedValue([]);
-    // ตั้งใจให้ค่านี้เล็กกว่าที่ควรจะเป็นถ้า count ไม่กรอง ward (เช่น 50 ทั้งตาราง)
+    // ตั้งใจให้ค่านี้เล็กกว่าที่ควรจะเป็นถ้า count ไม่กรอง department (เช่น 50 ทั้งตาราง)
     // เพื่อพิสูจน์ว่า meta.total มาจาก count ที่กรองแล้วจริง ๆ ไม่ใช่ค่าที่ hardcode ไว้ทั้งระบบ
     prisma.devices.count.mockResolvedValue(3);
 
-    const result = await service.findAll({ page: 1, limit: 20, ward: ['ICU'] } as never);
+    const result = await service.findAll(
+      { page: 1, limit: 20, departmentId: ['ICU'] } as never,
+      GLOBAL,
+    );
 
-    const expectedWhere = { where: { ward: { in: ['ICU'] } } };
+    const expectedWhere = { where: { AND: [{ departmentId: { in: ['ICU'] } }] } };
     expect(prisma.devices.findMany).toHaveBeenCalledWith(expect.objectContaining(expectedWhere));
     expect(prisma.devices.count).toHaveBeenCalledWith(expectedWhere);
     expect(result.meta.total).toBe(3);
@@ -223,14 +289,18 @@ describe('DeviceService — findAll pagination', () => {
     prisma.devices.findMany.mockResolvedValue([]);
     prisma.devices.count.mockResolvedValue(1);
 
-    await service.findAll({ page: 1, limit: 20, search: 'icu-1' } as never);
+    await service.findAll({ page: 1, limit: 20, search: 'icu-1' } as never, GLOBAL);
 
     const expectedWhere = {
       where: {
-        OR: [
-          { staticName: { contains: 'icu-1', mode: 'insensitive' } },
-          { serial: { contains: 'icu-1', mode: 'insensitive' } },
-          { name: { contains: 'icu-1', mode: 'insensitive' } },
+        AND: [
+          {
+            OR: [
+              { staticName: { contains: 'icu-1', mode: 'insensitive' } },
+              { serial: { contains: 'icu-1', mode: 'insensitive' } },
+              { name: { contains: 'icu-1', mode: 'insensitive' } },
+            ],
+          },
         ],
       },
     };
@@ -238,22 +308,44 @@ describe('DeviceService — findAll pagination', () => {
     expect(prisma.devices.count).toHaveBeenCalledWith(expectedWhere);
   });
 
-  it('มีทั้ง ward และ search → รวมเป็น AND ของทั้งสองเงื่อนไข', async () => {
+  it('มีทั้ง department และ search → รวมเป็น AND ของทั้งสองเงื่อนไข', async () => {
     prisma.devices.findMany.mockResolvedValue([]);
     prisma.devices.count.mockResolvedValue(1);
 
-    await service.findAll({ page: 1, limit: 20, ward: ['ICU'], search: 'box' } as never);
+    await service.findAll(
+      { page: 1, limit: 20, departmentId: ['ICU'], search: 'box' } as never,
+      GLOBAL,
+    );
 
     const expectedWhere = {
       where: {
-        ward: { in: ['ICU'] },
-        OR: [
-          { staticName: { contains: 'box', mode: 'insensitive' } },
-          { serial: { contains: 'box', mode: 'insensitive' } },
-          { name: { contains: 'box', mode: 'insensitive' } },
+        AND: [
+          { departmentId: { in: ['ICU'] } },
+          {
+            OR: [
+              { staticName: { contains: 'box', mode: 'insensitive' } },
+              { serial: { contains: 'box', mode: 'insensitive' } },
+              { name: { contains: 'box', mode: 'insensitive' } },
+            ],
+          },
         ],
       },
     };
     expect(prisma.devices.count).toHaveBeenCalledWith(expectedWhere);
+  });
+
+  it('ผู้ใช้ที่ถูก scope: filter departmentId ของ client ต้องไม่ทับเงื่อนไข department ของ scope', async () => {
+    prisma.devices.findMany.mockResolvedValue([]);
+    prisma.devices.count.mockResolvedValue(0);
+    const scope: AccessScope = { kind: 'TENANT', tenantId: 'T1', departments: ['OPD'] };
+
+    // ขอ ICU ซึ่งไม่อยู่ใน scope — where ต้องเป็น AND (ได้ผลว่าง) ไม่ใช่ถูกแทนด้วย ICU
+    await service.findAll({ page: 1, limit: 20, departmentId: ['ICU'] } as never, scope);
+
+    expect(prisma.devices.count).toHaveBeenCalledWith({
+      where: {
+        AND: [{ tenantId: 'T1', departmentId: { in: ['OPD'] } }, { departmentId: { in: ['ICU'] } }],
+      },
+    });
   });
 });

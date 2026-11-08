@@ -37,14 +37,14 @@ describe('PartnerApiKeyService', () => {
           keyHash: data.keyHash,
           keyPrefix: data.keyPrefix,
           createAt: new Date('2026-01-01'),
-          wards: [{ ward: 'ICU' }, { ward: 'OPD' }],
+          tenants: [{ tenantId: 'ICU' }, { tenantId: 'OPD' }],
         }),
       );
 
-      const result = await service.create({ name: 'Acme', wards: ['ICU', 'OPD'] });
+      const result = await service.create({ name: 'Acme', tenantIds: ['ICU', 'OPD'] });
 
       expect(result.apiKey).toMatch(/^pk_live_/);
-      expect(result.wards).toEqual(['ICU', 'OPD']);
+      expect(result.tenantIds).toEqual(['ICU', 'OPD']);
 
       const [[createArgs]] = prisma.partnerApiKeys.create.mock.calls;
       const expectedHash = createHash('sha256').update(result.apiKey).digest('hex');
@@ -65,22 +65,22 @@ describe('PartnerApiKeyService', () => {
         id: 'key-1',
         name: 'Acme',
         revokedAt: new Date('2026-02-01'),
-        wards: [{ ward: 'ICU' }],
+        tenants: [{ tenantId: 'ICU' }],
       });
       await expect(service.validate('pk_live_whatever')).resolves.toBeNull();
     });
 
-    it('returns the key context (with allowlisted wards) when valid and active', async () => {
+    it('returns the key context (with allowlisted tenants) when valid and active', async () => {
       prisma.partnerApiKeys.findUnique.mockResolvedValue({
         id: 'key-1',
         name: 'Acme',
         revokedAt: null,
-        wards: [{ ward: 'ICU' }, { ward: 'OPD' }],
+        tenants: [{ tenantId: 'ICU' }, { tenantId: 'OPD' }],
       });
 
       const context = await service.validate('pk_live_whatever');
 
-      expect(context).toEqual({ id: 'key-1', name: 'Acme', wards: new Set(['ICU', 'OPD']) });
+      expect(context).toEqual({ id: 'key-1', name: 'Acme', tenants: new Set(['ICU', 'OPD']) });
     });
   });
 

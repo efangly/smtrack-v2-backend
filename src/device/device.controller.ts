@@ -69,7 +69,8 @@ export class DeviceController {
       type: 'object',
       properties: {
         serial: { type: 'string' },
-        ward: { type: 'string' },
+        tenantId: { type: 'string' },
+        departmentId: { type: 'string' },
         staticName: { type: 'string' },
         name: { type: 'string' },
         status: { type: 'boolean' },
@@ -89,23 +90,38 @@ export class DeviceController {
     @Req() req: Request & { user: JwtPayloadDto },
     @UploadedFile(uploadedImagePipe()) file?: Express.Multer.File,
   ): Promise<Devices> {
-    return this.deviceService.create(dto, file, req.user);
+    return this.deviceService.create(dto, req.user.scope, file, req.user);
   }
 
   @Get()
-  findAll(@Query() pagination: QueryDeviceDto): Promise<Paginated<Devices>> {
-    return this.deviceService.findAll(pagination);
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
+  findAll(
+    @Query() pagination: QueryDeviceDto,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<Paginated<Devices>> {
+    return this.deviceService.findAll(pagination, req.user.scope);
   }
 
   @Get(':serial')
-  findOne(@Param('serial') serial: string): Promise<Devices> {
-    return this.deviceService.findOne(serial);
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
+  findOne(
+    @Param('serial') serial: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<Devices> {
+    return this.deviceService.findOne(serial, req.user.scope);
   }
 
   /** หาจุดติดตั้งด้วย identity ถาวร — ใช้ได้แม้ตอนนั้นยังไม่มีกล่องติดตั้งอยู่ */
   @Get('by-name/:staticName')
-  findByStaticName(@Param('staticName') staticName: string): Promise<Devices> {
-    return this.deviceService.findByStaticName(staticName);
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
+  findByStaticName(
+    @Param('staticName') staticName: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<Devices> {
+    return this.deviceService.findByStaticName(staticName, req.user.scope);
   }
 
   /**
@@ -118,11 +134,13 @@ export class DeviceController {
   @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER, Role.SERVICE, Role.ADMIN)
-  swap(
+  async swap(
     @Param('staticName') staticName: string,
     @Body() dto: SwapDeviceDto,
     @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<SwapResult> {
+    // ตรวจ scope ก่อนสลับ — ADMIN สลับได้เฉพาะจุดติดตั้งใน tenant ตัวเอง
+    await this.deviceService.findByStaticName(staticName, req.user.scope);
     return this.assignments.swapByStaticName(staticName, dto.serial, dto.reason, req.user);
   }
 
@@ -130,8 +148,11 @@ export class DeviceController {
   @Get('by-name/:staticName/assignments')
   @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard)
-  async assignmentHistory(@Param('staticName') staticName: string): Promise<DeviceAssignments[]> {
-    const device = await this.deviceService.findByStaticName(staticName);
+  async assignmentHistory(
+    @Param('staticName') staticName: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<DeviceAssignments[]> {
+    const device = await this.deviceService.findByStaticName(staticName, req.user.scope);
     return this.assignments.history(device.id);
   }
 
@@ -144,7 +165,8 @@ export class DeviceController {
     schema: {
       type: 'object',
       properties: {
-        ward: { type: 'string' },
+        tenantId: { type: 'string' },
+        departmentId: { type: 'string' },
         staticName: { type: 'string' },
         name: { type: 'string' },
         status: { type: 'boolean' },
@@ -165,6 +187,6 @@ export class DeviceController {
     @Req() req: Request & { user: JwtPayloadDto },
     @UploadedFile(uploadedImagePipe()) file?: Express.Multer.File,
   ): Promise<Devices> {
-    return this.deviceService.update(id, dto, file, req.user);
+    return this.deviceService.update(id, dto, req.user.scope, file, req.user);
   }
 }

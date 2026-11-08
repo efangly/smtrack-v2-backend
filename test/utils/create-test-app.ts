@@ -121,6 +121,11 @@ export interface CreateTestAppOptions {
    * ใช้เฉพาะเทสที่ตั้งใจทดสอบ publish ผ่าน RabbitMQ จริง เช่น test/rmq-fcm-publish.e2e-spec.ts
    */
   realRabbitmq?: boolean;
+  /**
+   * ใช้ ObjectStorageService ตัวจริงตาม env (ARCHIVE_S3_*) แทน stub — สำหรับเทสที่พิสูจน์
+   * export/on-demand restore กับ object storage จริง เช่น test/ondemand-restore.e2e-spec.ts
+   */
+  realObjectStorage?: boolean;
 }
 
 /**
@@ -152,13 +157,15 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     builder = builder.overrideProvider(RabbitmqService).useValue(mocks.rabbitmq);
   }
 
-  const moduleRef = await builder
-    .overrideProvider(ObjectStorageService)
-    .useValue({
+  if (!options.realObjectStorage) {
+    builder = builder.overrideProvider(ObjectStorageService).useValue({
       putObject: jest.fn().mockResolvedValue(undefined),
       getObjectStream: jest.fn(),
       deleteObject: jest.fn().mockResolvedValue(undefined),
-    })
+    });
+  }
+
+  const moduleRef = await builder
     .overrideProvider(FirmwareStorageService)
     .useClass(InMemoryFirmwareStorageStub)
     .compile();

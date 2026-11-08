@@ -6,7 +6,6 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { from as copyFrom } from 'pg-copy-streams';
 import { createGunzip } from 'node:zlib';
@@ -14,10 +13,11 @@ import { pipeline } from 'node:stream/promises';
 import { ObjectStorageService } from './object-storage.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PG_POOL } from './backup.tokens';
-import { AppConfig } from '../config/configuration';
-import { ArchiveMeta, LOG_DAYS_COLUMNS } from './archive-export.service';
+import { ArchiveMeta } from './archive-export.service';
+import { LEGACY_LOG_DAY_ARCHIVE_COLUMNS, unknownLogDayColumns } from './archive-tables';
 import {
   archiveObjectKey,
+  hotWindowStart,
   isMonthString,
   metaObjectKey,
   monthRange,
@@ -30,32 +30,6 @@ export interface RestoreResult {
   objectKey: string;
 }
 
-/**
- * ลำดับคอลัมน์ของไฟล์ที่ export ไว้ "ก่อน" จะมีคอลัมน์ device_id (และก่อน probe_id ที่มาทีหลัง)
- * ใช้เมื่อไฟล์ meta ไม่มีฟิลด์ `columns` (ไฟล์เก่า) — ห้ามแก้ลำดับนี้ ไม่งั้น backup เก่าจะ restore ไม่ได้
- * คอลัมน์ที่ไม่อยู่ในชุดนี้ (device_id, probe_id) จะถูก COPY ปล่อยเป็น NULL ซึ่งถูกต้องแล้ว
- */
-const LEGACY_LOG_DAY_ARCHIVE_COLUMNS = [
-  'id',
-  'serial',
-  'temp',
-  'temp_display',
-  'humidity',
-  'humidity_display',
-  'send_time',
-  'plug',
-  'door1',
-  'door2',
-  'door3',
-  'internet',
-  'probe',
-  'battery',
-  'temp_internal',
-  'ext_memory',
-  'create_at',
-  'update_at',
-] as const;
-
 @Injectable()
 export class ArchiveRestoreService {
   private readonly logger = new Logger(ArchiveRestoreService.name);
@@ -63,7 +37,6 @@ export class ArchiveRestoreService {
   constructor(
     private readonly storage: ObjectStorageService,
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService<AppConfig>,
     @Inject(PG_POOL) private readonly pool: Pool,
   ) {}
 
@@ -91,21 +64,26 @@ export class ArchiveRestoreService {
    */
   async restoreMonth(month: MonthString): Promise<RestoreResult> {
     this.assertValidMonth(month);
-    const { from, to } = monthRange(month);
+    const { from } = monthRange(month);
 
     // กัน restore เดือนที่ raw data ยังอยู่ใน log_days (จะทำให้ view log_days_all ซ้ำ)
-    const retentionMonths = this.config.get('archive.retentionMonths', { infer: true })!;
-    const retentionEdge = new Date();
-    retentionEdge.setUTCMonth(retentionEdge.getUTCMonth() - retentionMonths);
-    if (to > retentionEdge) {
+    // hot window = เดือนก่อนหน้า + เดือนปัจจุบัน — ดู hotWindowStart()
+    if (from >= hotWindowStart()) {
       throw new BadRequestException(
-        `เดือน ${month} ยังอยู่ใน retention window — query จากตาราง log_days ได้โดยตรง`,
+        `เดือน ${month} ยังอยู่ใน hot window — query จากตาราง log_days ได้โดยตรง`,
       );
     }
 
     const already = await this.prisma.archiveRestore.findUnique({ where: { month: from } });
     if (already) {
       throw new ConflictException(`เดือน ${month} ถูก restore ไว้แล้ว (${already.rowCount} rows)`);
+    }
+    // on-demand restore รายอุปกรณ์ใส่แถวชุดเดียวกันไว้แล้ว — COPY ทั้งเดือนจะชน PK (id, send_time)
+    const perDevice = await this.prisma.restoredWindow.count({ where: { month: from } });
+    if (perDevice > 0) {
+      throw new ConflictException(
+        `เดือน ${month} มีข้อมูลที่ restore รายอุปกรณ์ค้างอยู่ ${perDevice} รายการ — รอให้หมดอายุก่อน`,
+      );
     }
 
     const key = archiveObjectKey(month);
@@ -169,6 +147,9 @@ export class ArchiveRestoreService {
       [from, to],
     );
     await this.prisma.archiveRestore.delete({ where: { month: from } });
+    // DELETE ด้านบนล้างทุกแถวของเดือน รวมที่ on-demand restore ไว้ — ต้องลบแถวสถานะด้วย
+    // ไม่งั้น restored_window จะบอกว่า "done" ทั้งที่ข้อมูลหายไปแล้ว
+    await this.prisma.restoredWindow.deleteMany({ where: { month: from } });
 
     return { month, removedRows: res.rowCount ?? 0 };
   }
@@ -179,8 +160,7 @@ export class ArchiveRestoreService {
    * แทน error ดิบจาก Postgres ที่ไม่บอกว่าไฟล์ไหนผิด
    */
   private assertKnownColumns(columns: readonly string[]): void {
-    const known = new Set<string>(LOG_DAYS_COLUMNS);
-    const unknown = columns.filter((c) => !known.has(c));
+    const unknown = unknownLogDayColumns(columns);
     if (unknown.length > 0) {
       throw new BadRequestException(
         `ไฟล์ meta ระบุคอลัมน์ที่ไม่รู้จัก: ${unknown.join(', ')} — ไฟล์อาจถูกแก้หรือมาจาก schema อื่น`,

@@ -57,7 +57,9 @@ describe('Analytics: logday + graph (e2e)', () => {
 
   describe('GET /logday/:serial', () => {
     it('คืนสรุปรายวันแบ่งตาม time_bucket (พิสูจน์ว่า hypertable ใช้งานได้)', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(200);
       const rows = unwrap(res.body);
@@ -75,7 +77,9 @@ describe('Analytics: logday + graph (e2e)', () => {
     });
 
     it('รวมจำนวน samples ของทุก bucket ได้เท่ากับจำนวน log ทั้งหมดของทั้งสอง probe', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
 
       const total = unwrap(res.body).reduce(
         (sum: number, r: { samples: number }) => sum + Number(r.samples),
@@ -85,7 +89,9 @@ describe('Analytics: logday + graph (e2e)', () => {
     });
 
     it('แยก bucket ต่อ probe ไม่เฉลี่ยข้าม probe — แต่ละวันมีแถวของทั้งสอง probe', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
       const rows = unwrap(res.body);
 
       // ทุกแถวต้องระบุได้ว่าเป็นของ probe ไหน
@@ -101,7 +107,9 @@ describe('Analytics: logday + graph (e2e)', () => {
     });
 
     it('samples รวมของแต่ละ probe ตรงกับจำนวนที่ seed ไว้ของ probe นั้น', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
 
       const sumFor = (probeId: string) =>
         unwrap(res.body)
@@ -113,14 +121,18 @@ describe('Analytics: logday + graph (e2e)', () => {
     });
 
     it('ชื่อ probe ติดมาจาก join ตาราง probes', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
 
       const names = new Set(unwrap(res.body).map((r: { name: string }) => r.name));
       expect(names).toEqual(new Set(['P1', 'P2']));
     });
 
     it('เรียง bucket จากใหม่ไปเก่า', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
 
       const days = unwrap(res.body).map((r: { day: string }) => new Date(r.day).getTime());
       expect(days).toEqual([...days].sort((a, b) => b - a));
@@ -129,9 +141,9 @@ describe('Analytics: logday + graph (e2e)', () => {
     // เดิม endpoint นี้ query ด้วย serial ตรง ๆ จึงคืน [] ให้ serial มั่ว
     // ตอนนี้ต้อง resolve เป็นจุดติดตั้งก่อน serial ที่ไม่มีในระบบจึงเป็น 404 ซึ่งบอกสาเหตุตรงกว่า
     it('คืน 404 เมื่อไม่มีอุปกรณ์ตาม serial นั้น', async () => {
-      const res = await request(app.getHttpServer()).get(
-        `${API_PREFIX}/logday/${E2E_PREFIX}ไม่มีจริง`,
-      );
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${E2E_PREFIX}ไม่มีจริง`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(404);
     });
@@ -142,7 +154,9 @@ describe('Analytics: logday + graph (e2e)', () => {
      * จึงไม่กลายเป็น Decimal/string ตรงกับที่ interface DailyRollup ประกาศไว้เป็น number
      */
     it('ค่าสถิติออกมาเป็น number ตรงกับ type ที่ประกาศไว้', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
 
       const { avgTemp, minTemp, maxTemp, samples } = unwrap(res.body)[0];
       for (const v of [avgTemp, minTemp, maxTemp, samples]) {
@@ -151,7 +165,9 @@ describe('Analytics: logday + graph (e2e)', () => {
     });
 
     it('avgTemp อยู่ระหว่าง minTemp กับ maxTemp และอยู่ในช่วงที่ seed ไว้', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/logday/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/logday/${serial}`)
+        .set('Authorization', bearerUser());
 
       for (const row of unwrap(res.body)) {
         expect(row.minTemp).toBeLessThanOrEqual(row.avgTemp);

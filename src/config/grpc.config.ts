@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 /**
  * Partner API (third-party) gRPC transport — เดียวที่ใช้ gRPC ในโปรเจคนี้ ที่เหลือเป็น
  * MQTT/RabbitMQ/REST ตาม CLAUDE.md เสมอ ดู docs/adr/0003-partner-api-keys-scope-by-ward.md
+ * และ docs/adr/0004-device-tenant-scope.md
  *
  * protoPath ต้องหาไฟล์ให้เจอทั้งตอนรันจาก source (ts-node/jest, __dirname = src/config) และ
  * ตอน build แล้ว (__dirname = dist/src/config) — nest-cli.json คัด partner/*.proto เข้า

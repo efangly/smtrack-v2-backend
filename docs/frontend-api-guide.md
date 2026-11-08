@@ -68,16 +68,22 @@ Two independent bearer schemes, both plain JWT (`passport-jwt`), never mix them 
 
 | Scheme | Header | Signed with | Payload | Used by |
 |---|---|---|---|---|
-| User JWT (Swagger security name `jwt`) | `Authorization: Bearer <token>` | `JWT_SECRET` | `{ id, name, role, wardId }` | Every human-facing endpoint (dashboard, admin CRUD) |
+| User JWT (Swagger security name `jwt`) | `Authorization: Bearer <token>` | `JWT_SECRET` | `{ id, name, role, tenantId, departmentIds, departmentScope?, typ: 'access' }` (issued by the auth service; a token whose `typ` is not `access`, or a non-SUPER/SERVICE token without `tenantId`, is rejected with 401) | Every human-facing endpoint (dashboard, admin CRUD) |
 | Device token (Swagger security name `device`) | `Authorization: Bearer <token>` | `DEVICE_SECRET` | `{ sn }` (hardware serial) | `POST /log/logday`, `POST /log/notifications` only — device-originated ingest |
 
 **Roles** (`role` field, enum): `SUPER, SERVICE, ADMIN, USER, LEGACY_ADMIN, LEGACY_USER, GUEST`.
 - `RolesGuard` + `@Roles(...)` gates specific routes to a role allowlist (see per-endpoint tables below) — otherwise 403.
-- **Ward scoping**: `USER`, `LEGACY_USER`, `GUEST` only see data for their own `wardId` on notification reads, mobile reads, and SSE streams (`src/common/auth/ward-scope.ts`). `SUPER`/`SERVICE`/`ADMIN`/`LEGACY_ADMIN` see everything.
+- **Tenant/department scoping** (ADR-0004, `src/common/auth/access-scope.ts`) applies to every device-related read and write — devices, config, probes, telemetry, logday, graph, notifications, mobile and SSE:
+  - `SUPER`/`SERVICE`: every tenant.
+  - `ADMIN`/`LEGACY_ADMIN`: every department of their own `tenantId`.
+  - `USER`/`LEGACY_USER`/`GUEST`: their `departmentIds` within their `tenantId` (none = sees nothing), or the whole tenant when the token carries `departmentScope: 'ALL'` (not issued by the auth service yet — `docs/auth-service-claim-spec.md`).
+  - Anything outside the caller's scope answers **404** (as if it did not exist), never 403 — except creating/moving a device into a tenant/department you can't see, which is **403**.
+  - Devices that have no `tenantId` yet (before `scripts/backfill-tenant` runs) are visible to SUPER/SERVICE only.
 
-**⚠️ Currently unauthenticated on purpose or by oversight** — be aware these are wide open right now:
+**⚠️ Currently unauthenticated on purpose or by oversight**:
 - All 4 `GET /log/backup/*` and mutating `/log/backup/*` routes have **no guard at all** (comment in code flags this as a known gap, not yet fixed).
-- `GET /log/devices`, `GET /log/devices/:serial`, `GET /log/devices/by-name/:staticName`, `GET /log/devices/:deviceId/config`, `GET /log/devices/:deviceId/probes`, `GET /log/probes/:id`, `GET /log/telemetry`, `GET /log/firmware/latest`, `GET /log/firmware/download/:version` are all intentionally public reads (explicit code comments — "keep prior smtrack-log behavior").
+- `/log/adjust/*` (field technicians, by design) and `GET /log/firmware/latest`, `GET /log/firmware/download/:version` (used by devices).
+- The device/config/probe/telemetry/logday reads that used to be public now **require a token** — send `Authorization` on every request.
 
 ## 5. SSE streams (`src/sse/sse.controller.ts`)
 
@@ -92,7 +98,7 @@ Two independent bearer schemes, both plain JWT (`passport-jwt`), never mix them 
   | `GET /log/devices/stream` | device online/offline/edit/swap events |
   | `GET /log/stream?channels=telemetry,notification,device` | any subset on one connection; omit `channels` = all three; unknown name → `400` |
 - A `heartbeat` event (`{ ts: <epoch ms> }`) fires every 30s on every stream regardless of channel — ignore it client-side, it exists only to stop proxies/load balancers from closing an idle-looking connection.
-- Events are ward-scoped the same way REST reads are (§4).
+- Events are scoped by tenant/department the same way REST reads are (§4).
 - Response is a raw SSE stream (`text/event-stream`), not the JSON envelope — each event's `data` field is the raw payload, `type`/event name is the channel (`telemetry`/`notification`/`device`/`heartbeat`).
 
 ## 6. Pagination
@@ -119,10 +125,10 @@ All paths below are relative to `/log`. "Guard" column: blank = no auth required
 ### Devices (`src/device/device.controller.ts`, `src/audit/audit.controller.ts`)
 | Method | Path | Guard | Body/Query | Returns |
 |---|---|---|---|---|
-| POST | `/devices` | `JwtAuthGuard` | multipart: `CreateDeviceDto` (`serial!, ward!, staticName!, status!(bool), seq!(int), firmware!, name?, remark?, position?, location?, tag?, installDate?`) + `positionPic?` | `Devices` |
-| GET | `/devices` | — | `QueryDeviceDto` (pagination + `ward?: string[]`, comma-separated or repeated, + `search?: string` — contains/insensitive OR-match on `staticName`, `serial`, `name`) | `Paginated<Devices>` |
-| GET | `/devices/:serial` | — | — | `Devices` |
-| GET | `/devices/by-name/:staticName` | — | — | `Devices` (lookup by permanent install-point identity, survives hardware swaps) |
+| POST | `/devices` | `JwtAuthGuard` | multipart: `CreateDeviceDto` (`serial!, tenantId!, departmentId!, staticName!, status!(bool), seq!(int), firmware!, name?, remark?, position?, location?, tag?, installDate?`) + `positionPic?` | `Devices` |
+| GET | `/devices` | `JwtAuthGuard` | `QueryDeviceDto` (pagination + `departmentId?: string[]`, comma-separated or repeated, + `search?: string` — contains/insensitive OR-match on `staticName`, `serial`, `name`) | `Paginated<Devices>` |
+| GET | `/devices/:serial` | `JwtAuthGuard` | — | `Devices` |
+| GET | `/devices/by-name/:staticName` | `JwtAuthGuard` | — | `Devices` (lookup by permanent install-point identity, survives hardware swaps) |
 | POST | `/devices/by-name/:staticName/swap` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE,ADMIN)` | `SwapDeviceDto {serial!, reason?}` | `SwapResult` — replaces the physical hardware box at this install point |
 | GET | `/devices/by-name/:staticName/assignments` | `JwtAuthGuard` | — | `DeviceAssignments[]` — install history (which box, which time range) |
 | PUT | `/devices/:id` | `JwtAuthGuard` | multipart: `UpdateDeviceDto` (partial of Create) + `positionPic?` | `Devices` |
@@ -132,7 +138,7 @@ All paths below are relative to `/log`. "Guard" column: blank = no auth required
 | Method | Path | Guard | Body | Returns |
 |---|---|---|---|---|
 | POST | `/devices/:deviceId/config` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE,ADMIN)` | `CreateDeviceConfigDto` (all optional: `dhcp, ip, mac, subnet, gateway, dns, dhcpEth, ipEth, macEth, subnetEth, gatewayEth, dnsEth, ssid, password, simSP, email1/2/3, hardReset`) | `Configs` |
-| GET | `/devices/:deviceId/config` | — | — | `Configs` |
+| GET | `/devices/:deviceId/config` | `JwtAuthGuard` | — | `Configs` |
 | PUT | `/devices/:deviceId/config` | same as POST | partial of above | `Configs` |
 | DELETE | `/devices/:deviceId/config` | same as POST | — | `Configs` |
 
@@ -140,16 +146,16 @@ All paths below are relative to `/log`. "Guard" column: blank = no auth required
 | Method | Path | Guard | Body/Query | Returns |
 |---|---|---|---|---|
 | POST | `/devices/:deviceId/probes` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE,ADMIN)` | `CreateProbeDto` (all optional: `name, type, channel, tempMin/Max, humiMin/Max, tempAdj, humiAdj, stampTime, doorQty(int), position, muteAlarmDuration, doorSound(bool), doorAlarmTime, muteDoorAlarmDuration, notiDelay(int), notiToNormal(bool), notiMobile(bool), notiRepeat(int), firstDay/secondDay/thirdDay(enum Day: OFF|ALL|MON..SUN), firstTime/secondTime/thirdTime`) | `Probes` |
-| GET | `/devices/:deviceId/probes` | — | pagination | `Paginated<Probes>` |
-| GET | `/probes/:id` | — | — | `Probes` |
+| GET | `/devices/:deviceId/probes` | `JwtAuthGuard` | pagination | `Paginated<Probes>` |
+| GET | `/probes/:id` | `JwtAuthGuard` | — | `Probes` |
 | PUT | `/probes/:id` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE,ADMIN)` | partial of Create | `Probes` |
 | DELETE | `/probes/:id` | same | — | `Probes` |
 
 ### Telemetry / logday (`src/telemetry/telemetry.controller.ts`, `src/logday/logday.controller.ts`)
 | Method | Path | Guard | Body/Query | Returns |
 |---|---|---|---|---|
-| GET | `/telemetry` | — | `QueryTelemetryDto`: pagination (`limit` up to 1000, default 100), `serial?, deviceId?, probeId?(UUID), probe?, from?/to?(ISO)` | `Paginated<LogDays>` |
-| GET | `/logday/:serialOrName` | — | accepts hardware `serial` OR install-point `staticName` | logday service's `summaryByDevice()` result |
+| GET | `/telemetry` | `JwtAuthGuard` | `QueryTelemetryDto`: pagination (`limit` up to 1000, default 100), `serial?, deviceId?, probeId?(UUID), probe?, from?/to?(ISO)` | `Paginated<LogDays>` |
+| GET | `/logday/:serialOrName` | `JwtAuthGuard` | accepts hardware `serial` OR install-point `staticName` | logday service's `summaryByDevice()` result |
 | POST | `/logday` | `DeviceJwtAuthGuard` (device token) | `CreateTelemetryDto \| CreateTelemetryDto[]` (`serial` forced from device token; all sensor fields optional: `temp, tempDisplay, humidity, humidityDisplay, sendTime, plug, door1/2/3, internet, probe, battery(0-100 int), tempInternal, extMemory`) | `LogDays \| LogDays[]`, HTTP 201 |
 | PUT | `/logday/:id` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE)` | partial of `CreateTelemetryDto` | `LogDays` |
 | DELETE | `/logday/:id` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE)` | — | `LogDays` |
@@ -160,17 +166,17 @@ Note: `POST /logday` is one of 3 parallel ingest paths (HTTP here, MQTT `devices
 | Method | Path | Guard | Body/Query | Returns |
 |---|---|---|---|---|
 | POST | `/notifications` | `DeviceJwtAuthGuard` (device token) | `CreateNotificationDto {serial!(overwritten from token), message!, detail?, probe?}` | `Notifications` (now also carries `category`/`severity`, computed server-side — see §9) |
-| GET | `/notifications` | `JwtAuthGuard` | `NotificationQueryDto` (pagination + `filter?`(legacy, message-contains) OR `category?`/`severity?`(preferred, indexed exact-match)) | `Paginated<Notifications>`, ward-scoped |
+| GET | `/notifications` | `JwtAuthGuard` | `NotificationQueryDto` (pagination + `filter?`(legacy, message-contains) OR `category?`/`severity?`(preferred, indexed exact-match)) | `Paginated<Notifications>`, scoped by tenant/department |
 | GET | `/notifications/dashboard/count` | `JwtAuthGuard` | — (declared before `:serial` to avoid route shadowing) | `NotificationDashboardCount` |
-| GET | `/notifications/unread-count` | `JwtAuthGuard` | — (declared before `:serial`) | `{ count: number }` — persistent, ward-scoped like `dashboard/count` |
-| POST | `/notifications/read-all` | `JwtAuthGuard` | — | `{ count: number }` — marks all of the caller's ward-scoped unread notifications as read |
+| GET | `/notifications/unread-count` | `JwtAuthGuard` | — (declared before `:serial`) | `{ count: number }` — persistent, scoped like `dashboard/count` |
+| POST | `/notifications/read-all` | `JwtAuthGuard` | — | `{ count: number }` — marks all of the caller's in-scope unread notifications as read |
 | PATCH | `/notifications/:id/read` | `JwtAuthGuard` | — | `Notifications` — marks one notification read, sets `readAt` |
 | GET | `/notifications/:serial` | `JwtAuthGuard` | — | `Notifications[]` |
 | PUT | `/notifications/:id` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE)` | `UpdateNotificationDto` | `Notifications` |
 | DELETE | `/notifications/:id` | `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE)` | — | `Notifications` |
 
 **Live unread count over SSE** (extends §5, doesn't require a separate connection): the `notification` channel now carries two shapes distinguished by whether `action` is present —
-- **New notification** (unchanged shape, plus one added field): the full `Notifications` row **with an extra `unreadCount` field** merged in (ward-scoped count at the moment of creation). No `action` field, same as before — existing consumers that only read known `Notifications` fields are unaffected.
+- **New notification** (unchanged shape, plus one added field): the full `Notifications` row **with an extra `unreadCount` field** merged in. For every role except SUPER/SERVICE it is the subscriber's own unread total across everything they can see (recomputed per subscriber); for SUPER/SERVICE it is the count of the department where the notification happened. No `action` field, same as before — existing consumers that only read known `Notifications` fields are unaffected.
 - **Read-state change** (new): `{ action: 'read', notificationId: string, unreadCount: number }` or `{ action: 'read-all', unreadCount: number }`. A consumer should branch on `'action' in event` — if present, it's a read-state update (don't toast it as a new alert), otherwise treat it as a new notification as before.
 
 ### Graph (`src/graph/graph.controller.ts`) — dashboard chart data, class-level `JwtAuthGuard`
@@ -178,7 +184,7 @@ Note: `POST /logday` is one of 3 parallel ingest paths (HTTP here, MQTT `devices
 |---|---|---|---|
 | GET | `/graph/:serialOrName` | `QueryGraphDto {range?: '1d'\|'7d'\|'30d'\|'custom'(default '1d'), from?/to?(ISO), probeId?(UUID)}` | `ProbeSeries[]` — one series per probe on this install point (accepts hardware serial or staticName, resolved to a continuous device history across hardware swaps) |
 
-### Repairs (`src/device-repair/device-repair.controller.ts`) — class-level `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE,ADMIN)` on ALL routes incl. GET
+### Repairs (`src/device-repair/device-repair.controller.ts`) — class-level `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE)` on ALL routes incl. GET (ADMIN removed: a box has no tenant while in stock/repair — ADR-0004)
 | Method | Path | Body/Query | Returns |
 |---|---|---|---|
 | POST | `/repairs` | `CreateRepairDto {serial!, devName?, info?, info1?, info2?, address?, ward?, detail?, phone?, status?, warrantyStatus?, remark?}` | `Repairs` |
@@ -188,7 +194,7 @@ Note: `POST /logday` is one of 3 parallel ingest paths (HTTP here, MQTT `devices
 | PUT | `/repairs/:id` | partial of Create | `Repairs` |
 | DELETE | `/repairs/:id` | — | `Repairs` |
 
-### Warranties (`src/warranties/warranties.controller.ts`) — class-level `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE,ADMIN)` on ALL routes incl. GET
+### Warranties (`src/warranties/warranties.controller.ts`) — class-level `JwtAuthGuard`+`RolesGuard(SUPER,SERVICE)` on ALL routes incl. GET (ADMIN removed, same reason as repairs)
 | Method | Path | Body/Query | Returns |
 |---|---|---|---|
 | POST | `/warranties` | `CreateWarrantyDto {serial!, devName?, product?, model?, installDate?, customerName?, customerAddress?, saleDepartment?, invoice?, expire?(ISO date), status?(bool), note?}` | `Warranties` |
@@ -220,7 +226,7 @@ Note: `POST /logday` is one of 3 parallel ingest paths (HTTP here, MQTT `devices
 | Method | Path | Returns |
 |---|---|---|
 | GET | `/mobile` | `mobileService.findNotification(req.user)` |
-| GET | `/mobile/:ward` | `mobileService.findWard(ward)` |
+| GET | `/mobile/department/:departmentId` | `mobileService.findByDepartment(departmentId, req.user)` — devices of that department within the caller's scope (empty list when outside it) |
 
 Note: there is **no FCM token registration endpoint** here despite the architecture doc mentioning one — `src/fcm/` has a service only, no controller. If mobile push registration is needed, it doesn't exist in this backend yet; check with backend team before assuming it exists.
 
@@ -244,7 +250,7 @@ Note: there is **no FCM token registration endpoint** here despite the architect
 
 Swagger can't show these (see §0). Field names below use the TypeScript/Prisma property name (not the `@map`'d snake_case DB column) — that's what JSON responses actually use.
 
-**Devices**: `id, serial(nullable — pointer to currently-installed Hardware), staticName(permanent identity), ward, name?, status(bool), seq(int), location?, position?, positionPic?, remark?, online(bool), tag?, createAt, updateAt`
+**Devices**: `id, serial(nullable — pointer to currently-installed Hardware), staticName(permanent identity), tenantId(nullable until backfilled), departmentId, name?, status(bool), seq(int), location?, position?, positionPic?, remark?, online(bool), tag?, createAt, updateAt`
 
 **Hardware** (the physical box, separate from `Devices` the install point): `id, serial, firmware, token?, installDate?, createAt, updateAt`
 

@@ -21,7 +21,7 @@ type AuthedRequest = Request & { user: JwtPayloadDto };
 
 /**
  * ทุก stream ต้องยืนยันตัวตน และ role ที่ถูก scope (USER/GUEST/LEGACY_USER) จะได้รับเฉพาะ
- * event ของ ward ตัวเอง — กรองที่ฝั่ง server ไม่ใช่ให้ client กรองเอง
+ * event ของ department ที่ตัวเองผูกอยู่ — กรองที่ฝั่ง server ไม่ใช่ให้ client กรองเอง
  *
  * รับ token ได้ทั้ง `Authorization: Bearer` และ `?token=` เพราะ EventSource ตั้ง header ไม่ได้
  */

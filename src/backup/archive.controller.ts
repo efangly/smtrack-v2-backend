@@ -1,14 +1,22 @@
-import { Controller, Delete, Get, Param, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../common/guards/jwt.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
 import { ArchiveExportService } from './archive-export.service';
 import { ArchiveRestoreService } from './archive-restore.service';
 import { MonthString } from './archive.util';
 
 /**
- * endpoint สำหรับหน้า admin บน frontend
- * ควรครอบด้วย auth guard ของระบบ (เช่น @UseGuards(JwtAuthGuard, AdminGuard))
+ * endpoint สำหรับหน้า admin บน frontend — จัดการ archive ด้วยมือ (นอกเหนือจาก CronJob และ
+ * on-demand restore อัตโนมัติ) จำกัดที่ SUPER/SERVICE เพราะ export/restore กิน I/O ของ DB และ S3
+ * และ DELETE /backup/restores/:month ลบข้อมูลที่ restore ไว้
  */
 @ApiTags('backup')
+@ApiBearerAuth('jwt')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.SUPER, Role.SERVICE)
 @Controller('backup')
 export class ArchiveController {
   constructor(

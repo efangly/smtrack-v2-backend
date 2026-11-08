@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Devices, Configs, Probes } from '../generated/prisma/client';
 import { AppEvents } from '../common/events/app-events';
@@ -14,6 +14,13 @@ import { ProbeChangeAction, buildProbeChangedEvent } from '../common/events/prob
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { computeSnapshotDiff } from '../audit/audit-diff.util';
+import {
+  AccessScope,
+  DeviceLocation,
+  canAccess,
+  deviceWhere,
+  scopeKey,
+} from '../common/auth/access-scope';
 import { DeviceAssignmentService } from './device-assignment.service';
 import { DeviceImageStorageService } from './device-image-storage.service';
 import { CreateDeviceDto } from './dto/create-device.dto';
@@ -23,9 +30,22 @@ import { Paginated } from '../common/pagination/paginated.dto';
 import { paginationSkip, toPaginated } from '../common/pagination/paginate.util';
 
 const ALL_KEY_PREFIX = 'device:all';
-const allKey = (pagination: QueryDeviceDto) =>
-  `${ALL_KEY_PREFIX}:${pagination.page ?? 1}:${pagination.limit ?? 20}:${(pagination.ward ?? []).slice().sort().join(',')}:${pagination.search ?? ''}`;
+/** export ให้ผู้เขียน Devices จากนอกโมดูล (legacy sync) ล้าง cache ชุดเดียวกันได้ */
+export const DEVICE_ALL_KEY_PREFIX = ALL_KEY_PREFIX;
+const allKey = (pagination: QueryDeviceDto, scope: AccessScope) =>
+  `${ALL_KEY_PREFIX}:${scopeKey(scope)}:${pagination.page ?? 1}:${pagination.limit ?? 20}:${(pagination.departmentId ?? []).slice().sort().join(',')}:${pagination.search ?? ''}`;
+
+/**
+ * tenant/department ที่จะวางจุดติดตั้ง (สร้างหรือย้าย) ต้องอยู่ใน scope ของผู้ทำ — frontend เลือกค่ามาจาก
+ * ฟอร์ม แต่ backend ไม่รู้ว่า department อยู่ tenant ไหน จึงตรวจได้แค่กับ token (ADR-0004)
+ */
+function assertCanPlace(scope: AccessScope, location: DeviceLocation): void {
+  if (!canAccess(scope, location)) {
+    throw new ForbiddenException('ไม่มีสิทธิ์จัดการอุปกรณ์ใน tenant/department นี้');
+  }
+}
 const oneKey = (serial: string) => `device:${serial}`;
+export const deviceOneKey = oneKey;
 
 /** include กล่องที่ติดตั้งอยู่ปัจจุบันเสมอ เพื่อให้ client ยังเห็น firmware/token เหมือนก่อนแยกตาราง */
 const WITH_HARDWARE = { hardware: true } as const;
@@ -95,9 +115,11 @@ export class DeviceService {
    */
   async create(
     dto: CreateDeviceDto,
+    scope: AccessScope,
     file?: Express.Multer.File,
     actor?: DeviceChangeActor,
   ): Promise<Devices> {
+    assertCanPlace(scope, { tenantId: dto.tenantId, departmentId: dto.departmentId });
     const { serial, firmware, installDate, ...deviceFields } = dto;
     const positionPic = file ? await this.uploadImage(serial, file) : undefined;
 
@@ -146,11 +168,13 @@ export class DeviceService {
     return this.imageStorage.upload(key, file.buffer, file.mimetype);
   }
 
-  async findAll(pagination: QueryDeviceDto): Promise<Paginated<Devices>> {
+  async findAll(pagination: QueryDeviceDto, scope: AccessScope): Promise<Paginated<Devices>> {
     // เก็บ cache เป็น {data, total} ธรรมดา ไม่ใช่ instance ของ Paginated เพราะ getOrSet
     // เขียน/อ่านผ่าน JSON.stringify/parse ทำให้ instanceof เช็คไม่ผ่านตอน cache hit
-    const { data, total } = await this.redis.getOrSet(allKey(pagination), 300, async () => {
-      const wardCondition = pagination.ward?.length ? { ward: { in: pagination.ward } } : undefined;
+    const { data, total } = await this.redis.getOrSet(allKey(pagination, scope), 300, async () => {
+      const departmentCondition = pagination.departmentId?.length
+        ? { departmentId: { in: pagination.departmentId } }
+        : undefined;
       const searchCondition = pagination.search
         ? {
             OR: [
@@ -160,8 +184,11 @@ export class DeviceService {
             ],
           }
         : undefined;
-      const where =
-        wardCondition || searchCondition ? { ...wardCondition, ...searchCondition } : undefined;
+      // AND กับ scope แทนการรวม object — ไม่งั้น departmentId ที่ client กรองมาจะทับเงื่อนไขของ scope
+      const conditions = [deviceWhere(scope), departmentCondition, searchCondition].filter(
+        (c): c is NonNullable<typeof c> => !!c && Object.keys(c).length > 0,
+      );
+      const where = conditions.length > 0 ? { AND: conditions } : undefined;
       const [data, total] = await Promise.all([
         this.prisma.devices.findMany({
           where,
@@ -178,8 +205,9 @@ export class DeviceService {
   }
 
   /** หาด้วย serial ของกล่องที่ติดตั้งอยู่ปัจจุบัน (พฤติกรรมเดิมของ GET /devices/:serial) */
-  findOne(serial: string): Promise<Devices> {
-    return this.redis.getOrSet(oneKey(serial), 300, async () => {
+  async findOne(serial: string, scope: AccessScope): Promise<Devices> {
+    // cache เป็นของจุดติดตั้ง ไม่แยกตามผู้ขอ — ตรวจ scope หลังอ่านทุกครั้ง
+    const device = await this.redis.getOrSet(oneKey(serial), 300, async () => {
       const device = await this.prisma.devices.findUnique({
         where: { serial },
         include: WITH_HARDWARE,
@@ -189,15 +217,18 @@ export class DeviceService {
       }
       return device;
     });
+    // นอก scope ตอบเหมือนหาไม่เจอ — ไม่ยืนยันว่ามีอุปกรณ์ของ tenant อื่นอยู่
+    if (!canAccess(scope, device)) throw new NotFoundException(`Device ${serial} not found`);
+    return device;
   }
 
   /** หาด้วย identity ถาวรของจุดติดตั้ง — ใช้ได้แม้ยังไม่มีกล่องติดตั้งอยู่ */
-  async findByStaticName(staticName: string): Promise<Devices> {
+  async findByStaticName(staticName: string, scope: AccessScope): Promise<Devices> {
     const device = await this.prisma.devices.findUnique({
       where: { staticName },
       include: WITH_HARDWARE,
     });
-    if (!device) {
+    if (!device || !canAccess(scope, device)) {
       throw new NotFoundException(`Device ${staticName} not found`);
     }
     return device;
@@ -238,6 +269,7 @@ export class DeviceService {
   async update(
     serial: string,
     dto: UpdateDeviceDto,
+    scope: AccessScope,
     file?: Express.Multer.File,
     actor?: DeviceChangeActor,
   ): Promise<Devices> {
@@ -249,9 +281,14 @@ export class DeviceService {
       where: { serial },
       include: WITH_HARDWARE,
     });
-    if (!before) {
+    if (!before || !canAccess(scope, before)) {
       throw new NotFoundException(`Device ${serial} not found`);
     }
+    // ย้าย tenant/department ได้เฉพาะไปที่ที่ตัวเองเห็นได้ — ไม่งั้นย้ายออกไปแล้วจะเสียสิทธิ์จัดการเครื่องเอง
+    assertCanPlace(scope, {
+      tenantId: dto.tenantId ?? before.tenantId,
+      departmentId: dto.departmentId ?? before.departmentId,
+    });
 
     const positionPic = file ? await this.uploadImage(serial, file) : undefined;
 
@@ -274,8 +311,8 @@ export class DeviceService {
 
     await this.redis.del(oneKey(serial));
     await this.redis.delByPattern(`${ALL_KEY_PREFIX}:*`);
-    // ward เปลี่ยนได้จาก dto นี้ — ต้องล้าง cache serial→ward ที่ SSE ใช้กรอง ไม่งั้น
-    // client ward เดิมจะยังเห็น event ของเครื่องที่ย้ายออกไปแล้วจนกว่า TTL จะหมด
+    // tenant/department เปลี่ยนได้จาก dto นี้ — ต้องล้าง cache serial→location ที่ SSE ใช้กรอง ไม่งั้น
+    // client ของที่เดิมจะยังเห็น event ของเครื่องที่ย้ายออกไปแล้วจนกว่า TTL จะหมด
     await this.assignments.invalidate(serial);
 
     if (before.positionPic && before.positionPic !== device.positionPic) {

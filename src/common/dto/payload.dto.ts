@@ -1,6 +1,10 @@
 import { IsString, MaxLength } from 'class-validator';
+import { AccessScope } from '../auth/access-scope';
 
-// หมายเหตุ: ไม่มี hosId เหมือนต้นฉบับ เพราะ v2 ตัด field hospital ออกจาก schema แล้ว
+/**
+ * ผู้ใช้ที่ยืนยันตัวตนแล้ว (req.user) — ไม่มี tenantId/departmentIds ดิบ ๆ ให้อ่าน
+ * ใช้ `scope` ที่ JwtStrategy คำนวณไว้แทนเสมอ (ดู common/auth/access-scope.ts)
+ */
 export class JwtPayloadDto {
   @IsString()
   @MaxLength(150)
@@ -14,7 +18,5 @@ export class JwtPayloadDto {
   @MaxLength(150)
   role: string;
 
-  @IsString()
-  @MaxLength(150)
-  wardId: string;
+  scope: AccessScope;
 }

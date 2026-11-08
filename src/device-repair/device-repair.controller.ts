@@ -30,7 +30,9 @@ import { QueryRepairDto } from './dto/query-repair.dto';
 @Controller('repairs')
 @ApiBearerAuth('jwt')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER, Role.SERVICE, Role.ADMIN)
+// ADMIN ถูกตัดออก: repair/warranty ผูกกับกล่อง (serial) ซึ่งไม่มี tenant เมื่ออยู่ในคลัง/ส่งซ่อม
+// จึงจำกัด tenant ไม่ได้ — ให้เป็นงานของผู้ให้บริการเท่านั้น (ADR-0004)
+@Roles(Role.SUPER, Role.SERVICE)
 export class DeviceRepairController {
   constructor(private readonly repairService: DeviceRepairService) {}
 

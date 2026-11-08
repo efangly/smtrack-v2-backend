@@ -95,10 +95,10 @@ describe('Probes (e2e)', () => {
       probeId = created.id;
     });
 
-    it('GET /devices/:deviceId/probes ไม่ต้อง auth และคืน probe ทั้งหมดของ device', async () => {
-      const res = await request(app.getHttpServer()).get(
-        `${API_PREFIX}/devices/${deviceId}/probes`,
-      );
+    it('GET /devices/:deviceId/probes คืน probe ทั้งหมดของ device ให้ผู้ใช้ที่อยู่ใน scope', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/${deviceId}/probes`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(200);
       const probes = unwrap(res.body);
@@ -106,14 +106,18 @@ describe('Probes (e2e)', () => {
     });
 
     it('GET /probes/:id คืน probe รายตัว', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/probes/${probeId}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/probes/${probeId}`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(200);
       expect(unwrap(res.body).id).toBe(probeId);
     });
 
     it('GET /probes/:id คืน 404 เมื่อไม่พบ', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/probes/missing-id`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/probes/missing-id`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(404);
     });

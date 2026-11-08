@@ -1,3 +1,5 @@
+import { NotFoundException } from '@nestjs/common';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProbeController } from './probe.controller';
 import { ProbeService } from './probe.service';
@@ -13,22 +15,33 @@ describe('ProbeController', () => {
     remove: jest.Mock;
   };
 
-  const user = { id: 'user-1', name: 'Somchai', role: 'ADMIN', wardId: 'ward-1' };
+  const user = {
+    id: 'user-1',
+    name: 'Somchai',
+    role: 'ADMIN',
+    scope: { kind: 'TENANT' as const, tenantId: 'tenant-1', departments: 'ALL' as const },
+  };
   const req = { user } as never;
 
+  let assignments: { assertDeviceAccess: jest.Mock };
+
   beforeEach(async () => {
+    assignments = { assertDeviceAccess: jest.fn().mockResolvedValue(undefined) };
     probeService = {
       create: jest.fn(),
       findAllByDevice: jest.fn(),
       findLatestTelemetryByDevice: jest.fn(),
-      findOne: jest.fn(),
+      findOne: jest.fn().mockResolvedValue({ id: 'probe-1', deviceId: 'dev-1' }),
       update: jest.fn(),
       remove: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProbeController],
-      providers: [{ provide: ProbeService, useValue: probeService }],
+      providers: [
+        { provide: ProbeService, useValue: probeService },
+        { provide: DeviceAssignmentService, useValue: assignments },
+      ],
     }).compile();
 
     controller = module.get(ProbeController);
@@ -46,7 +59,7 @@ describe('ProbeController', () => {
     probeService.findAllByDevice.mockResolvedValue({ data: [], meta: {} });
 
     const pagination = { page: 1, limit: 20 };
-    await controller.findAllByDevice('dev-1', pagination);
+    await controller.findAllByDevice('dev-1', pagination, req);
 
     expect(probeService.findAllByDevice).toHaveBeenCalledWith('dev-1', pagination);
   });
@@ -54,7 +67,7 @@ describe('ProbeController', () => {
   it('findLatestTelemetryByDevice เรียก service ด้วย deviceId', async () => {
     probeService.findLatestTelemetryByDevice.mockResolvedValue([]);
 
-    await controller.findLatestTelemetryByDevice('dev-1');
+    await controller.findLatestTelemetryByDevice('dev-1', req);
 
     expect(probeService.findLatestTelemetryByDevice).toHaveBeenCalledWith('dev-1');
   });
@@ -73,5 +86,18 @@ describe('ProbeController', () => {
     await controller.remove('probe-1', req);
 
     expect(probeService.remove).toHaveBeenCalledWith('probe-1', user);
+  });
+
+  it('probe ของจุดติดตั้งนอก scope ถูกปฏิเสธก่อนอ่าน/แก้/ลบ', async () => {
+    assignments.assertDeviceAccess.mockRejectedValue(new NotFoundException());
+
+    await expect(controller.findOne('probe-1', req)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(controller.update('probe-1', { name: 'X' }, req)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(controller.remove('probe-1', req)).rejects.toBeInstanceOf(NotFoundException);
+    expect(assignments.assertDeviceAccess).toHaveBeenCalledWith(user.scope, 'dev-1');
+    expect(probeService.update).not.toHaveBeenCalled();
+    expect(probeService.remove).not.toHaveBeenCalled();
   });
 });

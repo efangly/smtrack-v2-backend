@@ -51,19 +51,23 @@ The most significant design divergence from `CLAUDE.md`: the real schema splits 
 - **`Repairs`**, **`Warranties`** — tied to `Hardware.serial` (follow the box, not the install point).
 - **`LogDays`** — telemetry, **TimescaleDB hypertable on `sendTime`**, with nullable `deviceId`/`probeId` (fallback for a box not yet installed anywhere).
 - **`Notifications`** — **TimescaleDB hypertable on `createAt`**, with `deliveredSse`/`deliveredFcm` as described in `CLAUDE.md`, **plus** `isRead`/`readAt` (user-side read state, distinct from delivery status) and `category`/`severity` (computed at creation by a classifier: `TEMP|DOOR|INTERNET|PLUG|SDCARD|REPORT|OTHER`, `critical|warning|info`).
-- **`LogDayArchive`** + **`ArchiveExport`**/**`ArchiveRestore`** — `LogDays` rows older than the retention window are exported to S3/MinIO and removed from the hypertable; the two audit tables prevent duplicate export/restore.
+- **`LogDayArchive`** + **`ArchiveExport`**/**`ArchiveRestore`**/**`RestoredWindow`**/**`ArchiveJobRun`** — rows older than the hot window are exported to S3/MinIO (4 tables, keyed `source_table + month` in `ArchiveExport`) and then removed; `RestoredWindow` tracks per-install-point on-demand restores (lock + 24h sliding TTL); `ArchiveJobRun` records every CronJob step.
 - **`DeviceAudit`**/**`UserAudit`** — audit trail, also hypertables, with no FK to any entity (so audit rows survive even if the entity is deleted).
 - **`Firmwares`** — OTA file metadata; actual files live in a dedicated S3 bucket.
 
-**Actual TimescaleDB hypertables/retention policies** (from `prisma/migrations/*/migration.sql`):
+**Actual TimescaleDB hypertables/retention** (from `prisma/migrations/*/migration.sql` — the *current* state is mid-migration, see below):
 
-| Table | Hypertable on | Retention |
-|---|---|---|
-| `LogDays` | `sendTime` | — (aged out via the archive job instead) |
-| `LogDayArchive` | `sendTime`, 1-month chunks | — |
-| `notifications` | `createAt` | — |
-| `device_audit` | `createAt` | 6 months |
-| `user_audit` | `createAt` | 6 months |
+| Table | Hypertable on | Hot-window removal today | Target (ADR-0005) |
+|---|---|---|---|
+| `log_days` | `send_time`, 1-month chunks | `add_retention_policy` 6 months | archive CronJob drops chunks only after a verified export |
+| `notifications` | `create_at` | none (grows unbounded) | same as `log_days` |
+| `device_audit` | `create_at` | `add_retention_policy` 6 months (**no archive copy**) | same as `log_days` |
+| `user_audit` | `create_at` | `add_retention_policy` 6 months (**no archive copy**) | same as `log_days` |
+| `log_day_archive` | `send_time`, 1-month chunks | none — holds only on-demand restored rows, cleaned after 24h unread | unchanged |
+
+The time-based `add_retention_policy` calls are removed **last**, by the cut-over migration, after every month older than the hot window has a verified archive — see `docs/archive-operations.md`. Until then the old policies and the new job coexist; the job never deletes anything the old policy would not.
+
+**Archive** (CONTEXT.md: *Hot window*, *Archive*, *On-demand restore*, *Restored window*): the hot window is the previous + current calendar month (`hotWindowStart()` also guarantees the last 30 days, so `range=30d` never needs a restore). Older rows live as monthly `.csv.gz` per table on S3/MinIO for 5 years (bucket lifecycle, infra-owned). Export/drop and restored-window cleanup run as Kubernetes CronJobs executing `node dist/cli/archive-job` ([ADR-0006](adr/0006-archive-jobs-run-as-k8s-cronjobs.md)); requests for `log_days` beyond the hot window (`/graph` custom range, `/telemetry` with `deviceId` + `from`/`to`) trigger an on-demand restore of that install point's rows (HTTP 202 + `Retry-After` if not finished within 10 s).
 
 No continuous aggregates exist in the current system (no TimescaleDB continuous-aggregate rollups have been set up yet).
 
@@ -74,7 +78,7 @@ From `src/main.ts` — hybrid application:
 1. `NestFactory.create(AppModule, { bufferLogs: true })` (guarded by a 30-second timeout to prevent hanging if DB/MQTT connection fails without rejecting).
 2. Global setup: `ValidationPipe` (`transform`, `whitelist`), `HttpExceptionFilter`, `ResponseInterceptor` (wraps every response as `{ success, message, data, timestamp, statusCode }`), global prefix `log`, permissive CORS (`origin: '*'`, no cookies — clients send fetch/EventSource with an Authorization header).
 3. Swagger is enabled only outside production, mounted at `/docs`, with 2 bearer schemes (`jwt`, `device`).
-4. `connectMicroservice` attaches **3 microservices** to the same app: MQTT, RabbitMQ (general events), RabbitMQ (log/telemetry on a separate queue so high volume doesn't block the other queue).
+4. `connectMicroservice` attaches MQTT, RabbitMQ (general events), RabbitMQ (log/telemetry on a separate queue so high volume doesn't block the other queue), gRPC (partner API), and — only when `LEGACY_SYNC_ENABLED=true` — RabbitMQ `legacy_sync_queue`.
 5. `startAllMicroservices()` (same timeout guard), then `listen()`.
 
 ## 6. Ingestion Paths
@@ -86,6 +90,24 @@ Log/telemetry data can enter through 3 paths, as described in `CLAUDE.md` and co
 - **RabbitMQ consume** — a separate queue for other upstream gateways/services.
 
 All 3 paths funnel into a single entry point (`TelemetryService.ingest()`) — no duplicated insert logic.
+
+`ingest()` is idempotent on `(serial, probe, sendTime)`: a duplicate (MQTT QoS 1 redelivery, legacy sync overlapping backfill) returns the existing row without a second `telemetry.created` event. The MQTT log subscription is a shared subscription (`$share/<MQTT_SHARED_GROUP>/devices/+/log`) and each replica gets a unique client ID, so several replicas split the load instead of each storing every message.
+
+> **Running more than one replica:** SSE fan-out is still in-process (`EventEmitter2` → `SseService`). With a shared subscription only the replica that received a log emits it, so SSE clients connected to another replica miss it. Before scaling beyond one replica, move SSE fan-out onto Redis pub/sub (or similar).
+
+### Legacy sync (temporary, until cutover)
+
+While the legacy system still runs, it publishes everything to the topic exchange `legacy.sync`; v2 consumes it from `legacy_sync_queue` (single active consumer, prefetch 1, dead-letter `legacy_sync_dlq`) when `LEGACY_SYNC_ENABLED=true`. Runtime events reuse the consumers above; metadata snapshots go to `src/legacy-sync/`. See [ADR-0007](./adr/0007-legacy-sync-one-way-via-rabbitmq-snapshots.md) and [`legacy-sync-contract.md`](./legacy-sync-contract.md).
+
+## 6a. Why this is not split into microservices (yet)
+
+Reviewed 2026-11: about 1,000 boxes reporting every 5 minutes is about 3.3 messages/s, well under 1% of what one process and TimescaleDB can take. The real coupling is the shared database (`log_days`, `probes` and `devices` are used by 5–7 modules each, and every tenant filter joins `devices`), so splitting now would produce a distributed monolith. Revisit when any of these is true:
+
+- load grows by roughly 50–100× (about 10,000 boxes or more, or reporting every few seconds);
+- several teams need to deploy independently and keep colliding;
+- one part needs a very different SLA or exposure (e.g. the partner API, or ingest uptime guarantees).
+
+The cheap first step is **role-based deployment**: the same image, with env flags choosing which transports a deployment starts (`ingest`: MQTT + RabbitMQ consumers; `api`: REST + SSE; `partner`: gRPC; `worker`: the existing CLI jobs). That needs cross-process SSE fan-out first (see above).
 
 ## 7. Notification Fan-out
 

@@ -28,10 +28,10 @@ describe('SSE streams (e2e)', () => {
   let port: number;
   const clients: SseClient[] = [];
 
-  // device ตัวที่ 1 อยู่ ward OPD ตรงกับ ward ของ token default ใน test/utils/auth
+  // device ตัวที่ 1 อยู่ department OPD ตรงกับ department ของ token default ใน test/utils/auth
   const serial = serialFor(E2E_PREFIX, 1);
 
-  /** stream ทุกเส้นต้องมี token — default ใช้ header ของ user SUPER (เห็นทุก ward) */
+  /** stream ทุกเส้นต้องมี token — default ใช้ header ของ user SUPER (เห็นทุก department) */
   const openStream = async (
     path: string,
     headers: Record<string, string> = { Authorization: bearerUser() },
@@ -190,12 +190,12 @@ describe('SSE streams (e2e)', () => {
     expect((event.data as { serial: string }).serial).toBe(serial);
   });
 
-  it('USER เห็นเฉพาะ telemetry ของ ward ตัวเอง', async () => {
+  it('USER เห็นเฉพาะ telemetry ของ department ที่ตัวเองผูก', async () => {
     const opd = await openStream('/telemetry/stream', {
-      Authorization: bearerUser({ role: 'USER', wardId: 'OPD' }),
+      Authorization: bearerUser({ role: 'USER', departmentIds: ['ICU', 'OPD'] }),
     });
     const icu = await openStream('/telemetry/stream', {
-      Authorization: bearerUser({ role: 'USER', wardId: 'ICU' }),
+      Authorization: bearerUser({ role: 'USER', departmentIds: ['ICU'] }),
     });
 
     const log = buildLogs(serial, 1)[0];
@@ -207,9 +207,9 @@ describe('SSE streams (e2e)', () => {
     expect(icu.events.filter((e) => e.event === 'telemetry')).toHaveLength(0);
   });
 
-  it('USER ต่าง ward ไม่เห็น device event ของ ward OPD แต่ SUPER เห็น', async () => {
+  it('USER ต่าง department ไม่เห็น device event ของ department OPD แต่ SUPER เห็น', async () => {
     const icu = await openStream('/devices/stream', {
-      Authorization: bearerUser({ role: 'USER', wardId: 'ICU' }),
+      Authorization: bearerUser({ role: 'USER', departmentIds: ['ICU'] }),
     });
     const superUser = await openStream('/devices/stream');
 

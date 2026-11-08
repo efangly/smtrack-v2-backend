@@ -15,7 +15,12 @@ describe('FirmwareController', () => {
     remove: jest.Mock;
   };
 
-  const user = { id: 'user-1', name: 'Somchai', role: 'ADMIN', wardId: 'ward-1' };
+  const user = {
+    id: 'user-1',
+    name: 'Somchai',
+    role: 'ADMIN',
+    scope: { kind: 'TENANT' as const, tenantId: 'tenant-1', departments: 'ALL' as const },
+  };
   const req = { user } as never;
   const file = { originalname: 'app.bin' } as Express.Multer.File;
 

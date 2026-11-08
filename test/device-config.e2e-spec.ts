@@ -71,21 +71,33 @@ describe('Device config (e2e)', () => {
   });
 
   describe('GET /devices/:deviceId/config', () => {
-    it('ไม่ต้อง auth และคืน config ของ device', async () => {
-      const res = await request(app.getHttpServer()).get(
-        `${API_PREFIX}/devices/${deviceId}/config`,
-      );
+    it('คืน config ของ device ให้ผู้ใช้ที่อยู่ใน scope', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/${deviceId}/config`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(200);
       expect(unwrap(res.body).deviceId).toBe(deviceId);
     });
 
+    it('ไม่แนบ token ได้ 401 และผู้ใช้ tenant อื่นได้ 404', async () => {
+      const anonymous = await request(app.getHttpServer()).get(
+        `${API_PREFIX}/devices/${deviceId}/config`,
+      );
+      expect(anonymous.status).toBe(401);
+
+      const otherTenant = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/${deviceId}/config`)
+        .set('Authorization', bearerUser({ role: 'ADMIN', tenantId: `${PREFIX}OTHER` }));
+      expect(otherTenant.status).toBe(404);
+    });
+
     it('คืน 404 เมื่อ device นั้นยังไม่มี config', async () => {
       const other = await seedDevice(prisma, buildDevices(PREFIX)[1]);
 
-      const res = await request(app.getHttpServer()).get(
-        `${API_PREFIX}/devices/${other.deviceId}/config`,
-      );
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/${other.deviceId}/config`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(404);
     });

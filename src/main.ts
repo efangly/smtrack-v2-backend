@@ -11,7 +11,11 @@ import { Logger as PinoLogger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
 import { buildMqttOptions } from './config/mqtt.config';
-import { buildRmqOptions, buildRmqLogOptions } from './config/rabbitmq.config';
+import {
+  buildRmqLegacySyncOptions,
+  buildRmqLogOptions,
+  buildRmqOptions,
+} from './config/rabbitmq.config';
 import { buildGrpcOptions } from './config/grpc.config';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
@@ -92,8 +96,14 @@ async function bootstrap(): Promise<void> {
     app.connectMicroservice(buildRmqOptions(config), { inheritAppConfig: true });
     // attach RabbitMQ microservice แยก queue สำหรับ consume log/telemetry (ปริมาณสูงกว่า ไม่ให้บล็อก queue ข้างบน)
     app.connectMicroservice(buildRmqLogOptions(config), { inheritAppConfig: true });
+    // legacy sync (ADR-0007): ต่อ queue ที่ bind กับ exchange `legacy.sync` เฉพาะช่วงรันคู่ขนานก่อน cutover
+    // ปิดไว้ (default) = queue ยังเก็บ message ไว้ให้ ถ้าสร้างด้วย scripts/legacy-sync/setup-queue.ts แล้ว
+    if (config.get<boolean>('legacySync.enabled')) {
+      app.connectMicroservice(buildRmqLegacySyncOptions(config), { inheritAppConfig: true });
+      logger.log('Legacy sync consumer enabled');
+    }
     // attach gRPC microservice สำหรับ Partner API (third-party) — เดียวที่ใช้ gRPC ในโปรเจคนี้
-    // ดู docs/adr/0003-partner-api-keys-scope-by-ward.md
+    // ดู docs/adr/0003-partner-api-keys-scope-by-ward.md และ docs/adr/0004-device-tenant-scope.md
     app.connectMicroservice(buildGrpcOptions(config), { inheritAppConfig: true });
 
     await withTimeout(

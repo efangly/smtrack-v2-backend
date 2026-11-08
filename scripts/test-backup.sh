@@ -1,375 +1,194 @@
 #!/usr/bin/env bash
 #
-# ทดสอบระบบ backup/restore ครบวงจรบน docker compose
+# ทดสอบระบบ archive (export/drop/restore) กับ TimescaleDB + S3 จริง โดยไม่แตะ DB หรือ bucket ของใคร
 #
-#   docker compose up -d --build
 #   bash scripts/test-backup.sh
 #
-# exit 0 = ผ่านทุกเคส. ผลดิบของแต่ละเคสเก็บไว้ที่ $ARTIFACT_DIR
+# ขึ้น container ชั่วคราว 2 ตัว (ชื่อ archive-test-db / archive-test-s3, ไม่มี volume) รัน migration จริง
+# seed ข้อมูลหลายเดือนครบ 4 ตาราง แล้วรัน CLI (node dist/cli/archive-job) หลายสถานการณ์ ตามด้วย e2e
+# ที่คุยกับ DB/S3 ชุดเดียวกัน จบแล้วลบ container ทิ้งเสมอ (trap) exit 0 = ผ่านทุกเคส
 #
-# หมายเหตุเรื่องเวลา: restoreMonth บล็อกเดือนที่ยังอยู่ใน retention window และ
-# TimescaleDB มี retention policy drop LogDays ที่เก่ากว่า 6 เดือนทิ้ง
-# สคริปต์นี้จึงปิด retention policy ชั่วคราว → seed เดือน M-7 → export →
-# DELETE เองเพื่อจำลอง chunk drop → restore   (ไม่แตะนาฬิกา container)
-
-set -euo pipefail
-
-BASE_URL="${BASE_URL:-http://localhost:3000}"
-BUCKET="${ARCHIVE_S3_BUCKET:-smtrack-log-archive}"
-ARTIFACT_DIR="${ARTIFACT_DIR:-/tmp/backup-report}"
-SERIAL_PREFIX="BK-"
-SERIAL="${SERIAL_PREFIX}001"
-ROWS=5000
-
-# เดือนเป้าหมาย = 7 เดือนก่อน (นอก retention window 6 เดือน จึง restore ได้)
-# ใช้ psql คำนวณ เพื่อให้ตรงกับ timezone/ปฏิทินของ DB ไม่ใช่ของ host
-TARGET_MONTH=""
-CURRENT_MONTH=""
-
-PASS=0
-FAIL=0
-declare -a RESULTS=()
-
-# ── helpers ──────────────────────────────────────────────────────────────────
-
-psql_q() { # รัน SQL คืนค่าเดียวแบบไม่มี header/ช่องว่าง
-  docker compose exec -T timescaledb psql -U postgres -d smtrack -tAc "$1"
-}
-
-psql_run() { # รัน SQL ที่ไม่สนใจผลลัพธ์
-  docker compose exec -T timescaledb psql -U postgres -d smtrack -q -c "$1" >/dev/null
-}
-
-mc_exec() { # mc ใน container ของตัวเอง (image minio/mc ไม่มี shell tools ครบ จึงใช้ minio)
-  docker compose exec -T minio mc "$@"
-}
-
-http_code() { # คืน HTTP status code อย่างเดียว
-  curl -s -o "$ARTIFACT_DIR/last-body.json" -w '%{http_code}' -X "$1" "$BASE_URL$2"
-}
-
-# ดึงค่าตัวเลขจาก JSON — รองรับทั้งแบบ compact (response ของ Nest)
-# และแบบ pretty-print (meta.json ที่ putJson เขียน มีช่องว่างหลัง colon)
-json_num() { # json_num <ไฟล์> <key>
-  grep -Eo "\"$2\"[[:space:]]*:[[:space:]]*[0-9]+" "$1" 2>/dev/null |
-    head -1 | grep -Eo '[0-9]+$' || true
-}
-
-ok()   { PASS=$((PASS+1)); RESULTS+=("PASS | $1"); printf '  \033[32m✓\033[0m %s\n' "$1"; }
-bad()  { FAIL=$((FAIL+1)); RESULTS+=("FAIL | $1 — $2"); printf '  \033[31m✗\033[0m %s\n      %s\n' "$1" "$2"; }
-
-check_eq() { # check_eq <ชื่อเคส> <ค่าที่ได้> <ค่าที่คาด>
-  if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "ได้ '$2' คาดหวัง '$3'"; fi
-}
-
-step() { printf '\n\033[1m── %s\033[0m\n' "$1"; }
-
-# ── 0. ตรวจความพร้อมของ stack ────────────────────────────────────────────────
-
-mkdir -p "$ARTIFACT_DIR"
-step "0. ตรวจความพร้อมของ stack"
-
-if ! curl -fsS "$BASE_URL/health" >"$ARTIFACT_DIR/health.json" 2>/dev/null; then
-  echo "app ที่ $BASE_URL ยังไม่พร้อม — รัน 'docker compose up -d --build' ก่อน" >&2
-  exit 1
-fi
-ok "app healthy ที่ $BASE_URL"
-
-if mc_exec ls "local/$BUCKET" >/dev/null 2>&1; then
-  ok "bucket '$BUCKET' พร้อมใช้งาน"
-else
-  # alias อาจยังไม่ถูกตั้งใน container นี้ (minio-init ตั้งไว้ใน container ของมันเอง)
-  mc_exec alias set local http://localhost:9000 minioadmin minioadmin >/dev/null
-  if mc_exec ls "local/$BUCKET" >/dev/null 2>&1; then
-    ok "bucket '$BUCKET' พร้อมใช้งาน (ตั้ง alias ใหม่)"
-  else
-    bad "bucket '$BUCKET' พร้อมใช้งาน" "ไม่พบ bucket"; exit 1
-  fi
-fi
-
-TARGET_MONTH=$(psql_q "SELECT to_char(now() - INTERVAL '7 months', 'YYYY-MM')")
-CURRENT_MONTH=$(psql_q "SELECT to_char(now(), 'YYYY-MM')")
-OBJ_KEY="log-days/${TARGET_MONTH:0:4}/${TARGET_MONTH:5:2}/log-days-${TARGET_MONTH}.csv.gz"
-META_KEY="${OBJ_KEY%.csv.gz}.meta.json"
-echo "  เดือนเป้าหมาย: $TARGET_MONTH   เดือนปัจจุบัน: $CURRENT_MONTH"
-
-# ── cleanup ก่อนเริ่ม (idempotent) ───────────────────────────────────────────
-
-cleanup_test_data() {
-  psql_run "DELETE FROM \"LogDays\" WHERE serial LIKE '${SERIAL_PREFIX}%'"
-  psql_run "DELETE FROM \"LogDayArchive\" WHERE serial LIKE '${SERIAL_PREFIX}%'"
-  psql_run "DELETE FROM \"Devices\" WHERE serial LIKE '${SERIAL_PREFIX}%'"
-  psql_run "DELETE FROM \"ArchiveExport\" WHERE month = DATE '${TARGET_MONTH}-01'"
-  psql_run "DELETE FROM \"ArchiveRestore\" WHERE month = DATE '${TARGET_MONTH}-01'"
-  mc_exec rm --recursive --force "local/$BUCKET/log-days/" >/dev/null 2>&1 || true
-}
-cleanup_test_data
-
-# ── 1. ปิด retention policy ชั่วคราว ─────────────────────────────────────────
-
-step "1. ปิด retention policy ของ LogDays ชั่วคราว"
-# ถ้าไม่ปิด background job จะ drop chunk เดือน M-7 ทิ้งก่อนเราได้ export
-psql_run "SELECT remove_retention_policy('\"LogDays\"', if_exists => true)"
-POLICY_COUNT=$(psql_q "SELECT count(*) FROM timescaledb_information.jobs WHERE proc_name = 'policy_retention' AND hypertable_name = 'LogDays'")
-check_eq "retention policy ถูกปิดแล้ว" "$POLICY_COUNT" "0"
-
-# คืน policy กลับเสมอ ไม่ว่าสคริปต์จะจบยังไง — DB ต้องไม่ค้างสภาพผิดปกติ
-restore_policy() {
-  psql_run "SELECT add_retention_policy('\"LogDays\"', INTERVAL '6 months', if_not_exists => true)" || true
-}
-trap 'restore_policy' EXIT
-
-# ── 2. seed ข้อมูลเดือน M-7 ──────────────────────────────────────────────────
-
-step "2. seed device + $ROWS log rows ในเดือน $TARGET_MONTH"
-
-psql_run "INSERT INTO \"Devices\" (id, serial, ward, \"staticName\", name, status, seq, firmware, online)
-          VALUES (gen_random_uuid()::text, '$SERIAL', 'BK-WARD', 'backup-test', 'backup test device', true, 1, 'v1.0.0', false)"
-
-# กระจาย sendTime ให้ทั่วเดือน (คร่อมหลาย chunk) และให้ค่า temp เป็น deterministic
-# เพื่อเอา sum(temp) ไปเทียบหลัง restore ได้ว่าข้อมูลตรงจริง ไม่ใช่แค่จำนวนแถวตรง
-psql_run "INSERT INTO \"LogDays\" (id, serial, temp, \"tempDisplay\", humidity, \"humidityDisplay\", \"sendTime\", probe, battery, \"tempInternal\")
-          SELECT gen_random_uuid()::text,
-                 '$SERIAL',
-                 (i % 400) / 10.0,
-                 (i % 400) / 10.0,
-                 40 + (i % 200) / 10.0,
-                 40 + (i % 200) / 10.0,
-                 DATE '${TARGET_MONTH}-01' + (i * INTERVAL '8 minutes'),
-                 '1', i % 100, 25.5
-          FROM generate_series(1, $ROWS) AS i
-          WHERE DATE '${TARGET_MONTH}-01' + (i * INTERVAL '8 minutes') < DATE '${TARGET_MONTH}-01' + INTERVAL '1 month'"
-
-SEEDED=$(psql_q "SELECT count(*) FROM \"LogDays\" WHERE serial = '$SERIAL'")
-SEED_SUM=$(psql_q "SELECT COALESCE(sum(temp), 0)::numeric(20,4) FROM \"LogDays\" WHERE serial = '$SERIAL'")
-SEED_MIN=$(psql_q "SELECT min(\"sendTime\") FROM \"LogDays\" WHERE serial = '$SERIAL'")
-SEED_MAX=$(psql_q "SELECT max(\"sendTime\") FROM \"LogDays\" WHERE serial = '$SERIAL'")
-
-if [[ "$SEEDED" -gt 0 ]]; then ok "seed สำเร็จ: $SEEDED rows (sum(temp)=$SEED_SUM)"; else bad "seed สำเร็จ" "0 rows"; exit 1; fi
-
-# ── 3-6. export ──────────────────────────────────────────────────────────────
-
-step "3. POST /backup/exports/$TARGET_MONTH"
-
-EXPORT_START=$(date +%s)
-CODE=$(http_code POST "/backup/exports/$TARGET_MONTH")
-EXPORT_SECS=$(( $(date +%s) - EXPORT_START ))
-cp "$ARTIFACT_DIR/last-body.json" "$ARTIFACT_DIR/03-export.json"
-
-if [[ "$CODE" == "201" || "$CODE" == "200" ]]; then ok "export คืน $CODE"; else bad "export คืน 2xx" "ได้ $CODE: $(cat "$ARTIFACT_DIR/03-export.json")"; fi
-
-EXPORT_ROWS=$(json_num "$ARTIFACT_DIR/03-export.json" rowCount)
-EXPORT_SHA=$(grep -o '"sha256":"[a-f0-9]*"' "$ARTIFACT_DIR/03-export.json" | head -1 | cut -d'"' -f4)
-check_eq "export rowCount ตรงกับที่ seed" "$EXPORT_ROWS" "$SEEDED"
-if [[ -n "$EXPORT_SHA" ]]; then ok "export คืน sha256 (${EXPORT_SHA:0:16}…)"; else bad "export คืน sha256" "ไม่มีใน response"; fi
-echo "  ใช้เวลา ${EXPORT_SECS}s"
-
-step "4. ตรวจ artifact บน object storage"
-
-if mc_exec stat "local/$BUCKET/$OBJ_KEY" >"$ARTIFACT_DIR/04-stat.txt" 2>&1; then
-  ok "พบไฟล์ $OBJ_KEY"
-else
-  bad "พบไฟล์ $OBJ_KEY" "$(cat "$ARTIFACT_DIR/04-stat.txt")"
-fi
-
-OBJ_SIZE=$(mc_exec stat --json "local/$BUCKET/$OBJ_KEY" 2>/dev/null | grep -o '"size":[0-9]*' | head -1 | cut -d: -f2 || echo 0)
-if [[ "${OBJ_SIZE:-0}" -gt 0 ]]; then ok "ขนาดไฟล์ $OBJ_SIZE bytes"; else bad "ขนาดไฟล์ > 0" "ได้ $OBJ_SIZE"; fi
-
-mc_exec cat "local/$BUCKET/$META_KEY" >"$ARTIFACT_DIR/04-meta.json" 2>/dev/null || true
-META_ROWS=$(json_num "$ARTIFACT_DIR/04-meta.json" rowCount)
-check_eq "meta.json rowCount ตรงกับ export" "$META_ROWS" "$SEEDED"
-
-step "5. ตรวจ integrity ของ gzip stream"
-
-# แตก gzip แล้วนับบรรทัด — ต้องได้ rows + 1 (header)
-GZ_LINES=$(mc_exec cat "local/$BUCKET/$OBJ_KEY" | gunzip | wc -l | tr -d ' ')
-check_eq "gunzip นับบรรทัดได้ $((SEEDED + 1)) (รวม header)" "$GZ_LINES" "$((SEEDED + 1))"
-
-step "6. ตรวจตาราง ArchiveExport"
-EXPORT_ROW=$(psql_q "SELECT count(*) FROM \"ArchiveExport\" WHERE month = DATE '${TARGET_MONTH}-01'")
-check_eq "ArchiveExport มี 1 แถวของเดือนนี้" "$EXPORT_ROW" "1"
-
-# ── 7. จำลอง retention drop ──────────────────────────────────────────────────
-
-step "7. จำลอง retention drop (ลบข้อมูลออกจาก LogDays)"
-psql_run "DELETE FROM \"LogDays\" WHERE serial = '$SERIAL'"
-AFTER_DROP=$(psql_q "SELECT count(*) FROM \"LogDaysAll\" WHERE serial = '$SERIAL'")
-check_eq "LogDaysAll ว่างแล้ว (ข้อมูลหายจริง)" "$AFTER_DROP" "0"
-
-# ── 8-11. restore ────────────────────────────────────────────────────────────
-
-step "8. POST /backup/restores/$TARGET_MONTH"
-
-RESTORE_START=$(date +%s)
-CODE=$(http_code POST "/backup/restores/$TARGET_MONTH")
-RESTORE_SECS=$(( $(date +%s) - RESTORE_START ))
-cp "$ARTIFACT_DIR/last-body.json" "$ARTIFACT_DIR/08-restore.json"
-
-if [[ "$CODE" == "201" || "$CODE" == "200" ]]; then ok "restore คืน $CODE"; else bad "restore คืน 2xx" "ได้ $CODE: $(cat "$ARTIFACT_DIR/08-restore.json")"; fi
-RESTORE_ROWS=$(json_num "$ARTIFACT_DIR/08-restore.json" rowCount)
-check_eq "restore rowCount ตรงกับที่ export" "$RESTORE_ROWS" "$SEEDED"
-echo "  ใช้เวลา ${RESTORE_SECS}s"
-
-step "9. เทียบข้อมูลหลัง restore กับต้นฉบับ"
-# เทียบมากกว่าจำนวนแถว — ค่าจริงต้องตรงด้วย ไม่งั้น restore ที่ 'ผ่าน' อาจได้ข้อมูลเพี้ยน
-GOT_COUNT=$(psql_q "SELECT count(*) FROM \"LogDayArchive\" WHERE serial = '$SERIAL'")
-GOT_SUM=$(psql_q "SELECT COALESCE(sum(temp), 0)::numeric(20,4) FROM \"LogDayArchive\" WHERE serial = '$SERIAL'")
-GOT_MIN=$(psql_q "SELECT min(\"sendTime\") FROM \"LogDayArchive\" WHERE serial = '$SERIAL'")
-GOT_MAX=$(psql_q "SELECT max(\"sendTime\") FROM \"LogDayArchive\" WHERE serial = '$SERIAL'")
-
-check_eq "count ตรง" "$GOT_COUNT" "$SEEDED"
-check_eq "sum(temp) ตรง" "$GOT_SUM" "$SEED_SUM"
-check_eq "min(sendTime) ตรง" "$GOT_MIN" "$SEED_MIN"
-check_eq "max(sendTime) ตรง" "$GOT_MAX" "$SEED_MAX"
-
-step "10. ตรวจ view LogDaysAll"
-ALL_COUNT=$(psql_q "SELECT count(*) FROM \"LogDaysAll\" WHERE serial = '$SERIAL'")
-check_eq "LogDaysAll คืนข้อมูลครบ ไม่ซ้ำ" "$ALL_COUNT" "$SEEDED"
-
-step "11. GET /backup/months"
-curl -fsS "$BASE_URL/backup/months" >"$ARTIFACT_DIR/11-months.json"
-if grep -q "\"month\":\"$TARGET_MONTH\"" "$ARTIFACT_DIR/11-months.json" &&
-   grep -q '"restored":true' "$ARTIFACT_DIR/11-months.json"; then
-  ok "months แสดงเดือน $TARGET_MONTH เป็น restored: true"
-else
-  bad "months แสดง restored: true" "$(cat "$ARTIFACT_DIR/11-months.json")"
-fi
-
-# ── 12-15. guard ─────────────────────────────────────────────────────────────
-
-step "12-15. ตรวจ guard ต่าง ๆ"
-
-CODE=$(http_code POST "/backup/restores/$TARGET_MONTH")
-check_eq "restore ซ้ำ → 409 Conflict" "$CODE" "409"
-
-CODE=$(http_code POST "/backup/restores/$CURRENT_MONTH")
-check_eq "restore เดือนปัจจุบัน → 400 (retention window)" "$CODE" "400"
-
-CODE=$(http_code POST "/backup/restores/2020-01")
-check_eq "restore เดือนที่ไม่มี backup → 404" "$CODE" "404"
-
-CODE=$(http_code POST "/backup/restores/2020-13")
-check_eq "restore เดือน 13 → 400" "$CODE" "400"
-
-CODE=$(http_code POST "/backup/restores/abc")
-check_eq "restore เดือนรูปแบบผิด → 400" "$CODE" "400"
-
-# ── 16. rollback path (เคสสำคัญที่ unit test พิสูจน์ไม่ได้) ──────────────────
-
-step "16. rollback เมื่อ rowCount ไม่ตรงกับ meta"
-
-# unit test mock pg.Pool ไว้ จึงพิสูจน์ไม่ได้ว่า ROLLBACK จริงทำงาน — ต้องทดสอบตรงนี้
-mc_exec cp "local/$BUCKET/$OBJ_KEY" "local/$BUCKET/${OBJ_KEY}.bak" >/dev/null
-# ตัด 10 แถวท้ายออกแล้วอัดกลับ → rowCount จะไม่ตรงกับ meta.json
-mc_exec cat "local/$BUCKET/$OBJ_KEY" | gunzip | head -n "$((SEEDED + 1 - 10))" | gzip >"$ARTIFACT_DIR/16-truncated.csv.gz"
-docker compose cp "$ARTIFACT_DIR/16-truncated.csv.gz" minio:/tmp/truncated.csv.gz >/dev/null
-mc_exec cp /tmp/truncated.csv.gz "local/$BUCKET/$OBJ_KEY" >/dev/null
-
-# เคลียร์สภาพให้ restore ใหม่ได้
-psql_run "DELETE FROM \"LogDayArchive\" WHERE serial = '$SERIAL'"
-psql_run "DELETE FROM \"ArchiveRestore\" WHERE month = DATE '${TARGET_MONTH}-01'"
-
-CODE=$(http_code POST "/backup/restores/$TARGET_MONTH")
-cp "$ARTIFACT_DIR/last-body.json" "$ARTIFACT_DIR/16-mismatch.json"
-if [[ "$CODE" == "500" ]]; then ok "restore ไฟล์เพี้ยน → 500"; else bad "restore ไฟล์เพี้ยน → 500" "ได้ $CODE"; fi
-
-LEFTOVER=$(psql_q "SELECT count(*) FROM \"LogDayArchive\" WHERE serial = '$SERIAL'")
-check_eq "ROLLBACK ครบ — ไม่มีข้อมูลค้างใน LogDayArchive" "$LEFTOVER" "0"
-
-LEFTOVER_AUDIT=$(psql_q "SELECT count(*) FROM \"ArchiveRestore\" WHERE month = DATE '${TARGET_MONTH}-01'")
-check_eq "ROLLBACK ครบ — ไม่มี audit row ค้าง" "$LEFTOVER_AUDIT" "0"
-
-# คืนไฟล์ดีกลับ แล้ว restore ใหม่ให้สำเร็จ เพื่อทดสอบ DELETE ต่อ
-mc_exec cp "local/$BUCKET/${OBJ_KEY}.bak" "local/$BUCKET/$OBJ_KEY" >/dev/null
-mc_exec rm "local/$BUCKET/${OBJ_KEY}.bak" >/dev/null
-CODE=$(http_code POST "/backup/restores/$TARGET_MONTH")
-if [[ "$CODE" == "201" || "$CODE" == "200" ]]; then ok "restore ไฟล์ดีหลัง rollback สำเร็จ"; else bad "restore หลัง rollback" "ได้ $CODE"; fi
-
-# ── 17-18. remove ────────────────────────────────────────────────────────────
-
-step "17-18. DELETE /backup/restores/$TARGET_MONTH"
-
-CODE=$(http_code DELETE "/backup/restores/$TARGET_MONTH")
-cp "$ARTIFACT_DIR/last-body.json" "$ARTIFACT_DIR/17-remove.json"
-check_eq "remove คืน 200" "$CODE" "200"
-REMOVED=$(json_num "$ARTIFACT_DIR/17-remove.json" removedRows)
-check_eq "removedRows ตรงกับที่ restore" "$REMOVED" "$SEEDED"
-
-AFTER_REMOVE=$(psql_q "SELECT count(*) FROM \"LogDayArchive\" WHERE serial = '$SERIAL'")
-check_eq "LogDayArchive ว่างแล้ว" "$AFTER_REMOVE" "0"
-
-if mc_exec stat "local/$BUCKET/$OBJ_KEY" >/dev/null 2>&1; then
-  ok "ไฟล์บน object storage ยังอยู่ (remove ไม่แตะ archive)"
-else
-  bad "ไฟล์บน object storage ยังอยู่" "ไฟล์หายไป"
-fi
-
-CODE=$(http_code DELETE "/backup/restores/$TARGET_MONTH")
-check_eq "remove ซ้ำ → 404" "$CODE" "404"
-
-# ── 19-20. edge case ของ export ──────────────────────────────────────────────
-
-step "19-20. edge case ของ export"
-
-EMPTY_MONTH=$(psql_q "SELECT to_char(now() - INTERVAL '25 months', 'YYYY-MM')")
-CODE=$(http_code POST "/backup/exports/$EMPTY_MONTH")
-cp "$ARTIFACT_DIR/last-body.json" "$ARTIFACT_DIR/19-empty.json"
-if [[ "$CODE" == "201" || "$CODE" == "200" ]]; then ok "export เดือนที่ไม่มีข้อมูล → $CODE ไม่ throw"; else bad "export เดือนว่าง" "ได้ $CODE"; fi
-EMPTY_ROWS=$(json_num "$ARTIFACT_DIR/19-empty.json" rowCount)
-check_eq "export เดือนว่างคืน rowCount 0" "$EMPTY_ROWS" "0"
-
-CODE=$(http_code POST "/backup/exports/$TARGET_MONTH")
-if [[ "$CODE" == "201" || "$CODE" == "200" ]]; then ok "export เดือนเดิมซ้ำ → $CODE (upsert)"; else bad "export ซ้ำ" "ได้ $CODE"; fi
-
-# ── 21. MinIO ล่ม ────────────────────────────────────────────────────────────
-
-step "21. พฤติกรรมเมื่อ object storage ล่ม"
-
-CONN_BEFORE=$(psql_q "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'smtrack-log-archive'")
-docker compose stop minio >/dev/null 2>&1
-
-psql_run "DELETE FROM \"ArchiveRestore\" WHERE month = DATE '${TARGET_MONTH}-01'"
-CODE=$(http_code POST "/backup/restores/$TARGET_MONTH")
-cp "$ARTIFACT_DIR/last-body.json" "$ARTIFACT_DIR/21-minio-down.json"
-if [[ "$CODE" =~ ^(404|500|503)$ ]]; then ok "restore ตอน MinIO ล่ม → $CODE (ไม่ค้าง)"; else bad "restore ตอน MinIO ล่ม" "ได้ $CODE"; fi
-
-docker compose start minio >/dev/null 2>&1
-sleep 5
-CONN_AFTER=$(psql_q "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'smtrack-log-archive'")
-if [[ "$CONN_AFTER" -le "$CONN_BEFORE" ]]; then
-  ok "pg pool ไม่รั่ว (before=$CONN_BEFORE after=$CONN_AFTER)"
-else
-  bad "pg pool ไม่รั่ว" "before=$CONN_BEFORE after=$CONN_AFTER"
-fi
-
-# ── 22. คืนสภาพ ──────────────────────────────────────────────────────────────
-
-step "22. คืนสภาพฐานข้อมูล"
-
-cleanup_test_data
-restore_policy
-trap - EXIT
-
-POLICY_BACK=$(psql_q "SELECT count(*) FROM timescaledb_information.jobs WHERE proc_name = 'policy_retention' AND hypertable_name = 'LogDays'")
-check_eq "retention policy กลับมาแล้ว" "$POLICY_BACK" "1"
-RESIDUE=$(psql_q "SELECT count(*) FROM \"LogDaysAll\" WHERE serial LIKE '${SERIAL_PREFIX}%'")
-check_eq "ไม่มีข้อมูลทดสอบตกค้าง" "$RESIDUE" "0"
-
-# ── สรุป ─────────────────────────────────────────────────────────────────────
-
-{
-  echo "# ผลทดสอบ backup/restore — $(date '+%Y-%m-%d %H:%M:%S')"
-  echo
-  echo "เดือนเป้าหมาย: $TARGET_MONTH | rows: $SEEDED | ขนาด archive: $OBJ_SIZE bytes"
-  echo "export: ${EXPORT_SECS}s | restore: ${RESTORE_SECS}s | sha256: $EXPORT_SHA"
-  echo
-  printf '%s\n' "${RESULTS[@]}"
-  echo
-  echo "PASS=$PASS FAIL=$FAIL"
-} >"$ARTIFACT_DIR/summary.txt"
-
-printf '\n\033[1m═══ สรุป ═══\033[0m\n'
-printf '  PASS: \033[32m%d\033[0m   FAIL: \033[31m%d\033[0m\n' "$PASS" "$FAIL"
-printf '  รายละเอียด: %s/summary.txt\n\n' "$ARTIFACT_DIR"
-
-[[ "$FAIL" -eq 0 ]]
+# ต้องมี: docker, node/npm (ติดตั้ง dependency แล้ว), psql ไม่จำเป็น (ใช้ผ่าน docker exec)
+#
+# หมายเหตุ: ใช้ adobe/s3mock เป็น S3 เพราะ image ของ MinIO ถูกถอดออกจาก Docker Hub/quay.io แล้ว
+# (docker-compose.yml ของโปรเจกต์ยังอ้าง minio/minio:RELEASE.2025-04-22T22-12-26Z ซึ่งดึงไม่ได้อีก)
+# ตัว code คุยผ่าน AWS SDK มาตรฐานจึงใช้ได้กับทุก S3-compatible
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+DB=archive-test-db
+S3=archive-test-s3
+DB_PORT="${ARCHIVE_TEST_DB_PORT:-55432}"
+S3_PORT="${ARCHIVE_TEST_S3_PORT:-59090}"
+BUCKET=smtrack-log-archive
+
+export DATABASE_URL="postgresql://postgres:postgres@localhost:${DB_PORT}/smtrack_test"
+export ARCHIVE_S3_ENDPOINT="http://localhost:${S3_PORT}"
+export ARCHIVE_S3_ACCESS_KEY=x ARCHIVE_S3_SECRET_KEY=x ARCHIVE_S3_BUCKET="$BUCKET"
+export ARCHIVE_S3_FORCE_PATH_STYLE=true ARCHIVE_S3_REGION=us-east-1 NODE_ENV=production
+
+PASS=0; FAIL=0
+ok()  { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
+bad() { FAIL=$((FAIL+1)); printf '  \033[31m✗\033[0m %s\n      %s\n' "$1" "$2"; }
+step(){ printf '\n\033[1m%s\033[0m\n' "$1"; }
+check_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "ได้ '$2' คาดว่า '$3'"; fi; }
+psql_q() { docker exec "$DB" psql -U postgres -d smtrack_test -Atc "$1"; }
+psql_run() { docker exec "$DB" psql -U postgres -d smtrack_test -q -c "$1" >/dev/null; }
+cli() { node dist/cli/archive-job "$@" >/tmp/archive-test-cli.log 2>&1; echo $?; }
+logs() { sed 's/\x1b\[[0-9;]*m//g' /tmp/archive-test-cli.log; }
+
+cleanup() { docker rm -f "$DB" "$S3" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+step "0. เตรียมสภาพแวดล้อม"
+docker info >/dev/null 2>&1 || { echo "docker ไม่ทำงาน"; exit 2; }
+cleanup
+docker run -d --name "$DB" -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=smtrack_test \
+  -p "${DB_PORT}:5432" timescale/timescaledb:latest-pg17 >/dev/null || exit 2
+docker run -d --name "$S3" -p "${S3_PORT}:9090" adobe/s3mock:latest >/dev/null || exit 2
+for _ in $(seq 1 60); do docker exec "$DB" pg_isready -U postgres -d smtrack_test >/dev/null 2>&1 && break; sleep 1; done
+for _ in $(seq 1 60); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://localhost:${S3_PORT}/${BUCKET}")" = "200" ] && break; sleep 1
+done
+sleep 3 # timescaledb restart หลัง init
+for _ in $(seq 1 30); do docker exec "$DB" pg_isready -U postgres -d smtrack_test >/dev/null 2>&1 && break; sleep 1; done
+
+npx prisma migrate deploy >/tmp/archive-test-migrate.log 2>&1 \
+  && ok "migration ทั้งหมด (รวม 20261101000000_archive_multi_table_and_jobs) apply ผ่านบน TimescaleDB จริง" \
+  || { bad "migration" "$(tail -5 /tmp/archive-test-migrate.log)"; exit 1; }
+npm run build >/tmp/archive-test-build.log 2>&1 || { bad "build" "$(tail -5 /tmp/archive-test-build.log)"; exit 1; }
+
+step "1. seed ข้อมูล 7 เดือนล่าสุด × 4 ตาราง (สัมพัทธ์กับวันนี้)"
+docker exec -i "$DB" psql -U postgres -d smtrack_test -q <<'SQL'
+INSERT INTO hardware (id, serial) VALUES ('hw-1','SN-T1'),('hw-2','SN-T2');
+INSERT INTO devices (id, serial, static_name, seq, tenant_id) VALUES
+  ('dev-1','SN-T1','FRIDGE-1',1,'T1'),('dev-2','SN-T2','FRIDGE-2',2,'T1');
+INSERT INTO device_assignments (id, device_id, serial) VALUES ('as-1','dev-1','SN-T1'),('as-2','dev-2','SN-T2');
+CREATE TEMP TABLE months AS
+  SELECT generate_series(date_trunc('month', now() AT TIME ZONE 'UTC') - interval '6 months',
+                         date_trunc('month', now() AT TIME ZONE 'UTC'), interval '1 month') AS m;
+INSERT INTO log_days (id, serial, device_id, temp, send_time, create_at)
+SELECT 'ld-' || d.id || '-' || to_char(m,'YYYYMM') || '-' || g, d.serial, d.id, 4 + (g % 5),
+       m + (g * interval '18 hours'), m + (g * interval '18 hours')
+FROM (VALUES ('dev-1','SN-T1'),('dev-2','SN-T2')) AS d(id, serial), months, generate_series(0, 39) AS g
+WHERE m + (g * interval '18 hours') < m + interval '1 month';
+INSERT INTO notifications (id, serial, message, detail, device_id, create_at, update_at)
+SELECT 'n-' || to_char(m,'YYYYMM') || '-' || g, 'SN-T1', 'temp high',
+       E'line1\nline2 "quoted", comma\nline3', 'dev-1', m + (g * interval '1 day'), m + (g * interval '1 day')
+FROM months, generate_series(0,4) g;
+INSERT INTO device_audit (id, device_id, static_name, action, snapshot, create_at)
+SELECT 'da-' || to_char(m,'YYYYMM'), 'dev-1','FRIDGE-1','updated', '{"a":"x\ny","b":[1,2]}'::jsonb, m + interval '2 days' FROM months;
+INSERT INTO user_audit (id, entity_type, entity_id, action, snapshot, create_at)
+SELECT 'ua-' || to_char(m,'YYYYMM'), 'device','dev-1','updated', '{"k":"v"}'::jsonb, m + interval '3 days' FROM months;
+SQL
+[ $? -eq 0 ] && ok "seed สำเร็จ" || { bad "seed" "psql ล้มเหลว"; exit 1; }
+
+# จำนวนเดือนที่ "จบแล้ว" (ก่อนเดือนปัจจุบัน) ของ log_days = ควรถูก archive ทั้งหมด
+COMPLETE=$(psql_q "SELECT count(*) FROM generate_series(date_trunc('month', (SELECT min(send_time) FROM log_days)), date_trunc('month', now() AT TIME ZONE 'UTC') - interval '1 month', interval '1 month')")
+LD_TOTAL=$(psql_q "SELECT count(*) FROM log_days")
+
+step "2. dry-run: ไม่ export ไม่ลบอะไร"
+CODE=$(cli export-and-drop --dry-run)
+check_eq "dry-run exit 0" "$CODE" "0"
+check_eq "dry-run ไม่สร้าง archive_export" "$(psql_q 'SELECT count(*) FROM archive_export')" "0"
+check_eq "dry-run ไม่ลบ log_days" "$(psql_q 'SELECT count(*) FROM log_days')" "$LD_TOTAL"
+check_eq "dry-run ไม่เขียน archive_job_run" "$(psql_q 'SELECT count(*) FROM archive_job_run')" "0"
+
+step "2b. ซ้อม cut-over: backfill (archive ข้อมูลเก่าโดยไม่ลบ) → verify (พร้อมถอด retention policy ไหม)"
+CODE=$(cli backfill --dry-run)
+check_eq "backfill --dry-run exit 0" "$CODE" "0"
+check_eq "backfill --dry-run ไม่สร้าง archive_export" "$(psql_q 'SELECT count(*) FROM archive_export')" "0"
+check_eq "backfill --dry-run รายงานแถวต่อเดือนจาก DB" "$([ "$(logs | grep -c 'rows in database')" -gt 0 ] && echo yes || echo no)" "yes"
+
+CODE=$(cli verify)
+check_eq "verify ก่อน backfill ต้องไม่ผ่าน (ยังมีเดือนเก่าที่ไม่มี archive)" "$CODE" "1"
+check_eq "verify บอกว่ายังไม่พร้อม" "$([ "$(logs | grep -c 'NOT ready')" -gt 0 ] && echo yes || echo no)" "yes"
+
+CODE=$(cli backfill)
+check_eq "backfill exit 0" "$CODE" "0"
+for T in log_days notifications device_audit user_audit; do
+  check_eq "backfill archive ครบ ($T)" "$(psql_q "SELECT count(*) FROM archive_export WHERE source_table='$T'")" "$COMPLETE"
+done
+check_eq "backfill ไม่ลบข้อมูลเลย (log_days เท่าเดิม)" "$(psql_q 'SELECT count(*) FROM log_days')" "$LD_TOTAL"
+check_eq "backfill บันทึกเป็น job backfill ทั้งหมด" "$(psql_q "SELECT count(*) FROM archive_job_run WHERE job <> 'backfill'")" "0"
+
+CODE=$(cli verify)
+check_eq "verify หลัง backfill ผ่าน (exit 0)" "$CODE" "0"
+check_eq "verify รายงาน CUT-OVER READY" "$([ "$(logs | grep -c 'CUT-OVER READY')" -gt 0 ] && echo yes || echo no)" "yes"
+
+# ทำลายไฟล์ archive จริงบน S3 แล้ว verify ต้องจับได้ (ไม่เชื่อแค่ตัวเลขใน DB)
+V_KEY=$(psql_q "SELECT object_key FROM archive_export WHERE source_table='log_days' ORDER BY month LIMIT 1")
+V_MONTH=$(psql_q "SELECT month FROM archive_export WHERE source_table='log_days' ORDER BY month LIMIT 1")
+printf 'id,v\nx,1\n' | gzip | curl -s -X PUT --data-binary @- "http://localhost:${S3_PORT}/${BUCKET}/${V_KEY}" -o /dev/null
+CODE=$(cli verify --table=log_days)
+check_eq "verify จับไฟล์ที่ถูกแก้ได้ (exit 1)" "$CODE" "1"
+check_eq "ระบุเดือนและสาเหตุ (sha256 differs)" "$([ "$(logs | grep -c "log_days ${V_MONTH:0:7}: sha256 differs\|log_days ${V_MONTH:0:7}: row count")" -gt 0 ] && echo yes || echo no)" "yes"
+curl -s -X DELETE "http://localhost:${S3_PORT}/${BUCKET}/${V_KEY}" -o /dev/null
+CODE=$(cli verify --table=log_days)
+check_eq "verify จับไฟล์ที่หาย (exit 1)" "$CODE" "1"
+check_eq "ระบุว่า object missing" "$([ "$(logs | grep -c 'object missing')" -gt 0 ] && echo yes || echo no)" "yes"
+# ซ่อม: ลบ record แล้ว backfill ใหม่ (ข้อมูลยังอยู่ใน DB เพราะยังไม่ drop)
+psql_run "DELETE FROM archive_export WHERE source_table='log_days' AND month='$V_MONTH'"
+CODE=$(cli backfill --table=log_days)
+check_eq "backfill ซ่อมเดือนที่เสีย exit 0" "$CODE" "0"
+CODE=$(cli verify)
+check_eq "verify ผ่านอีกครั้งหลังซ่อม" "$CODE" "0"
+psql_run "DELETE FROM archive_job_run"
+
+step "3. export-and-drop จริง (หลัง backfill: ไม่ต้อง export ซ้ำ เหลือแค่ drop chunk ที่มี archive ยืนยันแล้ว)"
+CODE=$(cli export-and-drop)
+check_eq "exit 0" "$CODE" "0"
+for T in log_days notifications device_audit user_audit; do
+  check_eq "archive ครบทุกเดือนที่จบแล้ว ($T)" "$(psql_q "SELECT count(*) FROM archive_export WHERE source_table='$T'")" "$COMPLETE"
+done
+check_eq "ทุก archive_job_run ที่ทำจบเป็น succeeded" "$(psql_q "SELECT count(*) FROM archive_job_run WHERE status <> 'succeeded'")" "0"
+check_eq "export-and-drop ไม่ export ซ้ำ (backfill ทำไว้แล้ว) แต่ drop" "$(logs | grep -c 'exporting ')" "0"
+# ไฟล์บน S3 มีจริงและ sha ตรง: นับ object ของ log_days
+OBJS=$(curl -s "http://localhost:${S3_PORT}/${BUCKET}?list-type=2&prefix=log-days/" | grep -o '<Key>[^<]*csv.gz</Key>' | wc -l | tr -d ' ')
+check_eq "มีไฟล์ log_days.csv.gz บน S3 ครบ" "$OBJS" "$COMPLETE"
+check_eq "ไม่มีไฟล์ .staging ค้าง" "$(curl -s "http://localhost:${S3_PORT}/${BUCKET}?list-type=2" | grep -c '\.staging')" "0"
+HOT_ONLY=$(psql_q "SELECT count(*) FROM log_days WHERE send_time < date_trunc('month', (now() AT TIME ZONE 'UTC') - interval '30 days') - interval '1 month'")
+check_eq "ไม่มีแถวเก่ากว่า hot window หลงเหลือ (chunk ที่ archive แล้วถูก drop)" "$HOT_ONLY" "0"
+DROPPED=$(( LD_TOTAL - $(psql_q 'SELECT count(*) FROM log_days') ))
+[ "$DROPPED" -gt 0 ] && ok "chunk ถูก drop จริง ($DROPPED แถวออกจาก log_days)" || bad "drop_chunks" "ไม่มีแถวถูกลบเลย"
+
+step "4. รันซ้ำ: no-op และไม่ export ทับ (chunk คาบเกี่ยวขอบเดือนทำให้ DB เหลือแถวน้อยกว่า archive)"
+SUMS_BEFORE=$(psql_q "SELECT string_agg(source_table||month||sha256, ',' ORDER BY source_table, month) FROM archive_export")
+CODE=$(cli export-and-drop)
+check_eq "exit 0" "$CODE" "0"
+check_eq "archive_export ไม่เปลี่ยน (sha256 เดิมทุกเดือน)" "$(psql_q "SELECT string_agg(source_table||month||sha256, ',' ORDER BY source_table, month) FROM archive_export")" "$SUMS_BEFORE"
+check_eq "ไม่มีการ export ใหม่ในรอบที่สอง" "$(logs | grep -c 'exporting ')" "0"
+
+step "5. advisory lock: มีอีกตัวถืออยู่ → ข้าม exit 0 และบันทึก skipped"
+( docker exec "$DB" psql -U postgres -d smtrack_test -qAtc "SELECT pg_advisory_lock(hashtext('archive-job:export-and-drop')); SELECT pg_sleep(8);" >/dev/null 2>&1 & )
+sleep 2
+CODE=$(cli export-and-drop)
+check_eq "exit 0" "$CODE" "0"
+check_eq "บันทึก skipped" "$(psql_q "SELECT count(*) FROM archive_job_run WHERE status='skipped'")" "1"
+sleep 7
+
+step "6. S3 ล่ม: exit 1, บันทึก failed พร้อมสาเหตุที่อ่านรู้เรื่อง, ไม่ลบข้อมูลที่ยังไม่มีสำเนา"
+# เดือนล่าสุดที่จบแล้ว: ยังอยู่ใน hot window (ไม่ถูก drop) — ลบ record เพื่อให้ถือว่ายังไม่ archive
+LAST=$(psql_q "SELECT to_char(date_trunc('month', now() AT TIME ZONE 'UTC') - interval '1 month', 'YYYY-MM-DD')")
+psql_run "DELETE FROM archive_export WHERE source_table='log_days' AND month='$LAST'"
+BEFORE=$(psql_q "SELECT count(*) FROM log_days")
+CODE=$(ARCHIVE_S3_ENDPOINT=http://localhost:1 cli export-and-drop --table=log_days)
+check_eq "exit 1" "$CODE" "1"
+check_eq "สถานะ failed ถูกบันทึก" "$(psql_q "SELECT count(*) FROM archive_job_run WHERE status='failed' AND source_table='log_days' AND job='export-and-drop'")" "1"
+[ -n "$(psql_q "SELECT error FROM archive_job_run WHERE status='failed' LIMIT 1")" ] && ok "error ไม่ว่างเปล่า ($(psql_q "SELECT left(error,40) FROM archive_job_run WHERE status='failed' LIMIT 1"))" || bad "ข้อความ error" "ว่างเปล่า"
+check_eq "ไม่ลบแถวใด ๆ ของ log_days" "$(psql_q "SELECT count(*) FROM log_days")" "$BEFORE"
+step "7. S3 กลับมา: รอบถัดไปซ่อมเอง"
+CODE=$(cli export-and-drop --table=log_days)
+check_eq "exit 0" "$CODE" "0"
+check_eq "เดือนที่ค้างถูก archive แล้ว" "$(psql_q "SELECT count(*) FROM archive_export WHERE source_table='log_days' AND month='$LAST'")" "1"
+
+step "8. e2e กับ DB/S3 ชุดเดียวกัน (on-demand restore, TTL, 202, scope, ผสานข้อมูลมาช้า, ไฟล์ legacy)"
+npx jest --config test/jest-e2e.json test/ondemand-restore.e2e-spec.ts test/backup-archive.e2e-spec.ts \
+  >/tmp/archive-test-e2e.log 2>&1
+E2E=$?
+grep -E "Tests:|Test Suites:" /tmp/archive-test-e2e.log | sed 's/^/      /'
+[ $E2E -eq 0 ] && ok "e2e ผ่านทั้งหมด" || bad "e2e" "ดู /tmp/archive-test-e2e.log"
+
+printf '\n\033[1mสรุป: ผ่าน %d, ไม่ผ่าน %d\033[0m\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

@@ -1,11 +1,9 @@
 import { Readable, Writable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { ArchiveRestoreService } from './archive-restore.service';
 import { ObjectStorageService } from './object-storage.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { AppConfig } from '../config/configuration';
 
 function makeIngestStream(rowCount: number): Writable & { rowCount: number } {
   const w = new Writable({
@@ -26,11 +24,13 @@ describe('ArchiveRestoreService', () => {
     getJson: jest.Mock;
     bucket: string;
   };
-  let prisma: { archiveRestore: { findMany: jest.Mock; findUnique: jest.Mock; delete: jest.Mock } };
+  let prisma: {
+    archiveRestore: { findMany: jest.Mock; findUnique: jest.Mock; delete: jest.Mock };
+    restoredWindow: { count: jest.Mock; deleteMany: jest.Mock };
+  };
   let clientQuery: jest.Mock;
   let client: { query: jest.Mock; release: jest.Mock };
   let pool: { connect: jest.Mock; query: jest.Mock };
-  let config: ConfigService<AppConfig>;
 
   const gzippedCsv = () => Readable.from([gzipSync(Buffer.from('id,serial\n1,SN-1\n'))]);
 
@@ -50,6 +50,10 @@ describe('ArchiveRestoreService', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         delete: jest.fn().mockResolvedValue(undefined),
       },
+      restoredWindow: {
+        count: jest.fn().mockResolvedValue(0),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
     };
 
     clientQuery = jest.fn().mockImplementation((arg: unknown) => {
@@ -62,12 +66,9 @@ describe('ArchiveRestoreService', () => {
       query: jest.fn().mockResolvedValue({ rowCount: 5 }),
     };
 
-    config = { get: jest.fn().mockReturnValue(6) } as unknown as ConfigService<AppConfig>;
-
     service = new ArchiveRestoreService(
       storage as unknown as ObjectStorageService,
       prisma as unknown as PrismaService,
-      config,
       pool as any,
     );
   });
@@ -101,15 +102,20 @@ describe('ArchiveRestoreService', () => {
       await expect(service.restoreMonth('bad' as any)).rejects.toThrow(BadRequestException);
     });
 
-    it('ปฏิเสธเดือนที่ยังอยู่ใน retention window', async () => {
-      // now = 2026-07-15, retentionMonths = 6 -> retentionEdge = 2026-01-15
-      // เดือน 2026-06 สิ้นสุด (to) = 2026-07-01 ซึ่งอยู่หลัง retentionEdge
+    it('ปฏิเสธเดือนที่ยังอยู่ใน hot window', async () => {
+      // now = 2026-07-15 -> hot window เริ่ม 2026-06-01 (เดือนก่อนหน้า + เดือนปัจจุบัน)
       await expect(service.restoreMonth('2026-06')).rejects.toThrow(BadRequestException);
     });
 
     it('ปฏิเสธเมื่อ restore ไปแล้ว (409)', async () => {
       prisma.archiveRestore.findUnique.mockResolvedValue({ rowCount: BigInt(2) });
       await expect(service.restoreMonth('2025-01')).rejects.toThrow(ConflictException);
+    });
+
+    it('ปฏิเสธเมื่อมีข้อมูลที่ restore รายอุปกรณ์ค้างอยู่ (409) — กัน COPY ทั้งเดือนชน PK', async () => {
+      prisma.restoredWindow.count.mockResolvedValue(2);
+      await expect(service.restoreMonth('2025-01')).rejects.toThrow(ConflictException);
+      expect(pool.connect).not.toHaveBeenCalled();
     });
 
     it('ปฏิเสธเมื่อไม่มีไฟล์บน object storage (404)', async () => {

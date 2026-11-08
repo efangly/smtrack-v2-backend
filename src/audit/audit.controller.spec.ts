@@ -28,9 +28,12 @@ describe('AuditController', () => {
     auditService.findByDevice.mockResolvedValue({ data: [{ id: 'audit-1' }], meta: {} });
 
     const pagination = { page: 1, limit: 20 };
-    const result = await controller.findByDevice('OPD-01', pagination);
+    const scope = { kind: 'TENANT' as const, tenantId: 'T1', departments: 'ALL' as const };
+    const result = await controller.findByDevice('OPD-01', pagination, {
+      user: { scope },
+    } as never);
 
-    expect(deviceService.findByStaticName).toHaveBeenCalledWith('OPD-01');
+    expect(deviceService.findByStaticName).toHaveBeenCalledWith('OPD-01', scope);
     expect(auditService.findByDevice).toHaveBeenCalledWith('dev-1', pagination);
     expect(result).toEqual({ data: [{ id: 'audit-1' }], meta: {} });
   });

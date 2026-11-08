@@ -32,14 +32,11 @@ import { CacheModule } from './common/cache/cache.module';
 import { AuthModule } from './auth/auth.module';
 import { MobileModule } from './mobile/mobile.module';
 import { PartnerModule } from './partner/partner.module';
+import { LegacySyncModule } from './legacy-sync/legacy-sync.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
-      cache: true,
-    }),
+    ConfigModule.forRoot({ isGlobal: true, load: [configuration], cache: true }),
     // observability ต้องมาก่อนโมดูลอื่น เพื่อให้ทุกโมดูลได้ logger/tracer ที่ตั้งค่าแล้ว
     LoggerModule.forRoot(buildPinoOptions()),
     ObservabilityModule,
@@ -74,6 +71,7 @@ import { PartnerModule } from './partner/partner.module';
     CacheModule,
     MobileModule,
     PartnerModule,
+    LegacySyncModule,
   ],
 })
 export class AppModule {}

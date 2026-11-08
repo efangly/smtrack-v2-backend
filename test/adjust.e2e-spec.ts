@@ -131,19 +131,19 @@ describe('Adjust (e2e) — endpoint ไม่มี auth สำหรับอ�
       expect(inDb?.name).toBe('Updated Name');
     });
 
-    it('ฟิลด์ที่ไม่ได้อยู่ใน DTO (เช่น staticName/ward) ต้องถูก whitelist strip ทิ้ง ไม่กระทบข้อมูลจริง', async () => {
+    it('ฟิลด์ที่ไม่ได้อยู่ใน DTO (เช่น staticName/departmentId) ต้องถูก whitelist strip ทิ้ง ไม่กระทบข้อมูลจริง', async () => {
       const before = await prisma.devices.findUnique({ where: { id: deviceId } });
 
       const res = await request(app.getHttpServer())
         .patch(`${API_PREFIX}/adjust/${serial}`)
-        .send({ remark: 'second update', staticName: 'HIJACKED', ward: 'HIJACKED-WARD' });
+        .send({ remark: 'second update', staticName: 'HIJACKED', departmentId: 'HIJACKED-DEPT' });
 
       expect(res.status).toBe(200);
 
       const inDb = await prisma.devices.findUnique({ where: { id: deviceId } });
       expect(inDb?.remark).toBe('second update');
       expect(inDb?.staticName).toBe(before?.staticName);
-      expect(inDb?.ward).toBe(before?.ward);
+      expect(inDb?.departmentId).toBe(before?.departmentId);
     });
   });
 });

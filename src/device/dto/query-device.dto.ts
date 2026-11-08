@@ -3,7 +3,7 @@ import { IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export class QueryDeviceDto extends PaginationQueryDto {
-  /** กรองด้วย ward — รองรับค่าเดียว, comma-separated string, หรือ repeated query key (multi-select) */
+  /** กรองด้วย department — รองรับค่าเดียว, comma-separated string, หรือ repeated query key (multi-select) */
   @Transform(({ value }) => {
     if (value === undefined || value === null || value === '') return undefined;
     const values = Array.isArray(value) ? value : String(value).split(',');
@@ -11,7 +11,7 @@ export class QueryDeviceDto extends PaginationQueryDto {
   })
   @IsString({ each: true })
   @IsOptional()
-  ward?: string[];
+  departmentId?: string[];
 
   /** ค้นหาแบบ contains/insensitive จาก staticName, serial, name */
   @Transform(({ value }) => {

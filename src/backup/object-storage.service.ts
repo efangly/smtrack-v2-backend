@@ -7,6 +7,7 @@ import {
   ListObjectsV2Command,
   DeleteObjectCommand,
   PutObjectCommand,
+  CopyObjectCommand,
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'node:stream';
@@ -71,13 +72,34 @@ export class ObjectStorageService {
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T;
   }
 
+  /**
+   * มี object นี้ไหม — ตอบ false เฉพาะเมื่อ storage ยืนยันว่า "ไม่พบ" (404)
+   * error อื่น (เครือข่าย, 403, 5xx) ต้องโยนต่อ ไม่งั้น storage ล่มจะถูกรายงานว่าไฟล์ backup หาย
+   * และ logic ที่ตัดสินใจจากคำตอบนี้ (เช่นเขียนไฟล์ใหม่ทับ) จะทำงานบนข้อมูลที่ผิด
+   */
   async exists(key: string): Promise<boolean> {
     try {
       await this.s3.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (e.$metadata?.httpStatusCode === 404 || e.name === 'NotFound' || e.name === 'NoSuchKey') {
+        return false;
+      }
+      throw err;
     }
+  }
+
+  /** คัดลอก object ภายใน bucket เดียวกัน (atomic replace ของปลายทาง) — ใช้ promote ไฟล์ staging */
+  async copy(sourceKey: string, destKey: string): Promise<void> {
+    await this.s3.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        Key: destKey,
+        CopySource: `${this.bucket}/${sourceKey.split('/').map(encodeURIComponent).join('/')}`,
+      }),
+    );
+    this.logger.log(`copied s3://${this.bucket}/${sourceKey} -> ${destKey}`);
   }
 
   async list(prefix: string): Promise<{ key: string; size: number }[]> {

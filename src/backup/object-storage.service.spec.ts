@@ -22,6 +22,9 @@ jest.mock('@aws-sdk/client-s3', () => ({
   PutObjectCommand: jest
     .fn()
     .mockImplementation((input) => ({ __type: 'PutObjectCommand', input })),
+  CopyObjectCommand: jest
+    .fn()
+    .mockImplementation((input) => ({ __type: 'CopyObjectCommand', input })),
 }));
 
 jest.mock('@aws-sdk/lib-storage', () => ({
@@ -96,9 +99,35 @@ describe('ObjectStorageService', () => {
     await expect(service.exists('k')).resolves.toBe(true);
   });
 
-  it('exists คืน false เมื่อ HeadObject ล้มเหลว', async () => {
-    send.mockRejectedValue(new Error('not found'));
+  it('exists คืน false เฉพาะเมื่อ storage ยืนยันว่าไม่พบ (404 / NotFound)', async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('x'), { $metadata: { httpStatusCode: 404 } }),
+    );
     await expect(service.exists('k')).resolves.toBe(false);
+    send.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'NotFound' }));
+    await expect(service.exists('k')).resolves.toBe(false);
+  });
+
+  it('exists โยน error ต่อเมื่อเป็นปัญหาอื่น (storage ล่ม/403) — ไม่รายงานว่าไฟล์หาย', async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('boom'), { $metadata: { httpStatusCode: 503 } }),
+    );
+    await expect(service.exists('k')).rejects.toThrow('boom');
+    send.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    await expect(service.exists('k')).rejects.toThrow('ECONNREFUSED');
+  });
+
+  it('copy คัดลอกภายใน bucket เดียวกันและ encode แต่ละส่วนของ key', async () => {
+    send.mockResolvedValue({});
+    await service.copy('log-days/2026/01/a b.csv.gz.staging', 'log-days/2026/01/a b.csv.gz');
+    expect(send).toHaveBeenCalledWith({
+      __type: 'CopyObjectCommand',
+      input: {
+        Bucket: 'smtrack-log-archive',
+        Key: 'log-days/2026/01/a b.csv.gz',
+        CopySource: 'smtrack-log-archive/log-days/2026/01/a%20b.csv.gz.staging',
+      },
+    });
   });
 
   it('list วนหน้าตาม ContinuationToken จนครบ', async () => {

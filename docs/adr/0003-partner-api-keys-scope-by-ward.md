@@ -1,6 +1,9 @@
 ---
-status: supersedes ADR-0002 (allowlist shape only)
+status: supersedes ADR-0002 (allowlist shape only); scope unit superseded by ADR-0004
 ---
+
+> Scoping a key by a group rather than by serial still stands, but the group is now the
+> **tenant** (`ListDevicesByTenant`) — see [ADR-0004](./0004-device-tenant-scope.md).
 
 # Partner API keys scope by ward, not per-serial allowlist; public surface is gRPC
 

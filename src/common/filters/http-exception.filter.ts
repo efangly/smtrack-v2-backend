@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Prisma } from '../../generated/prisma/client';
+import { RestoreInProgressException } from '../exceptions/restore-in-progress.exception';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -17,6 +18,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+
+    // 202 ไม่ใช่ error — ข้อมูลกำลังถูก restore จาก archive ให้ client ยิงซ้ำตาม Retry-After
+    if (exception instanceof RestoreInProgressException) {
+      response.setHeader('Retry-After', String(exception.retryAfterSeconds));
+      response.status(HttpStatus.ACCEPTED).json({
+        success: true,
+        message: (exception.getResponse() as { message: string }).message,
+        data: null,
+        retryAfterSeconds: exception.retryAfterSeconds,
+        statusCode: HttpStatus.ACCEPTED,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
 
     let status =
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;

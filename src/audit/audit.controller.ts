@@ -1,5 +1,7 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
+import { JwtPayloadDto } from '../common/dto/payload.dto';
 import { DeviceService } from '../device/device.service';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -25,8 +27,9 @@ export class AuditController {
   async findByDevice(
     @Param('staticName') staticName: string,
     @Query() pagination: PaginationQueryDto,
+    @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<Paginated<DeviceAuditEntry>> {
-    const device = await this.deviceService.findByStaticName(staticName);
+    const device = await this.deviceService.findByStaticName(staticName, req.user.scope);
     return this.auditService.findByDevice(device.id, pagination);
   }
 }

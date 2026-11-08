@@ -24,7 +24,6 @@ x-app-env: &app-env
   RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
   JWT_SECRET: local-dev-secret-not-for-production
   DEVICE_SECRET: local-dev-device-secret-not-for-production
-  ARCHIVE_RETENTION_MONTHS: '6'
   # archive object storage → MinIO ในเครือข่าย compose (S3-compatible)
   # forcePathStyle จำเป็นกับ MinIO เพราะไม่มี virtual-host style bucket
   ARCHIVE_S3_ENDPOINT: http://minio:9000

@@ -3,6 +3,7 @@ import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { TelemetryService } from '../src/telemetry/telemetry.service';
 import { API_PREFIX, createTestApp, unwrap } from './utils/create-test-app';
+import { bearerUser } from './utils/auth';
 import {
   E2E_PREFIX,
   buildDevices,
@@ -56,7 +57,10 @@ describe('Telemetry (e2e)', () => {
   });
 
   it('GET /telemetry?serial=… คืนเฉพาะ serial นั้น เรียงตาม sendTime จากใหม่ไปเก่า', async () => {
-    const res = await request(app.getHttpServer()).get(`${API_PREFIX}/telemetry`).query({ serial });
+    const res = await request(app.getHttpServer())
+      .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
+      .query({ serial });
 
     expect(res.status).toBe(200);
     const logs = unwrap(res.body);
@@ -70,6 +74,7 @@ describe('Telemetry (e2e)', () => {
   it('limit จำกัดจำนวนแถวที่คืน', async () => {
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ serial, limit: 2 });
 
     expect(res.status).toBe(200);
@@ -81,6 +86,7 @@ describe('Telemetry (e2e)', () => {
 
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ serial, from });
 
     expect(res.status).toBe(200);
@@ -95,6 +101,7 @@ describe('Telemetry (e2e)', () => {
   it('range=1d กรองเป็นช่วง 1 วันย้อนหลังจากปัจจุบัน', async () => {
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ serial, range: '1d' });
 
     expect(res.status).toBe(200);
@@ -110,6 +117,7 @@ describe('Telemetry (e2e)', () => {
   it('range=custom ต้องส่ง from/to มาด้วย ไม่งั้นปฏิเสธ', async () => {
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ serial, range: 'custom' });
 
     expect(res.status).toBe(400);
@@ -121,6 +129,7 @@ describe('Telemetry (e2e)', () => {
 
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ serial, range: 'custom', from, to });
 
     expect(res.status).toBe(200);
@@ -131,6 +140,7 @@ describe('Telemetry (e2e)', () => {
   it('ปฏิเสธ range ที่ไม่ใช่ค่าใน enum', async () => {
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ serial, range: 'invalid' });
 
     expect(res.status).toBe(400);
@@ -139,6 +149,7 @@ describe('Telemetry (e2e)', () => {
   it('ไม่ระบุ serial คืนข้อมูลรวมทุกเครื่อง', async () => {
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ limit: 1000 });
 
     expect(res.status).toBe(200);
@@ -150,9 +161,11 @@ describe('Telemetry (e2e)', () => {
   it('ปฏิเสธ limit เกินขอบเขตที่กำหนดไว้ใน DTO', async () => {
     const tooBig = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ limit: 9999 });
     const tooSmall = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ limit: 0 });
 
     expect(tooBig.status).toBe(400);
@@ -162,6 +175,7 @@ describe('Telemetry (e2e)', () => {
   it('ปฏิเสธ from ที่ไม่ใช่รูปแบบวันที่', async () => {
     const res = await request(app.getHttpServer())
       .get(`${API_PREFIX}/telemetry`)
+      .set('Authorization', bearerUser())
       .query({ serial, from: 'ไม่ใช่วันที่' });
 
     expect(res.status).toBe(400);
@@ -206,6 +220,7 @@ describe('Telemetry (e2e)', () => {
 
       const res = await request(app.getHttpServer())
         .get(`${API_PREFIX}/telemetry`)
+        .set('Authorization', bearerUser())
         .query({ serial, probeId: log.probeId! });
 
       expect(res.status).toBe(200);
@@ -217,6 +232,7 @@ describe('Telemetry (e2e)', () => {
     it('GET /telemetry?probe= กรองด้วย channel ดิบได้', async () => {
       const res = await request(app.getHttpServer())
         .get(`${API_PREFIX}/telemetry`)
+        .set('Authorization', bearerUser())
         .query({ serial, probe: '9' });
 
       expect(res.status).toBe(200);
@@ -228,6 +244,7 @@ describe('Telemetry (e2e)', () => {
     it('ปฏิเสธ probeId ที่ไม่ใช่ uuid', async () => {
       const res = await request(app.getHttpServer())
         .get(`${API_PREFIX}/telemetry`)
+        .set('Authorization', bearerUser())
         .query({ serial, probeId: 'ไม่ใช่ uuid' });
 
       expect(res.status).toBe(400);

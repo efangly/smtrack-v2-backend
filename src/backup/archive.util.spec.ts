@@ -1,4 +1,10 @@
-import { archiveObjectKey, isMonthString, metaObjectKey, monthRange } from './archive.util';
+import {
+  archiveObjectKey,
+  hotWindowStart,
+  isMonthString,
+  metaObjectKey,
+  monthRange,
+} from './archive.util';
 
 describe('archive.util', () => {
   describe('isMonthString', () => {
@@ -37,6 +43,32 @@ describe('archive.util', () => {
       const { from, to } = monthRange('2025-12');
       expect(from.toISOString()).toBe('2025-12-01T00:00:00.000Z');
       expect(to.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+    });
+  });
+
+  describe('hotWindowStart', () => {
+    const at = (iso: string) => hotWindowStart(new Date(iso)).toISOString();
+
+    it('กลางเดือน: วันที่ 1 ของเดือนก่อนหน้า', () => {
+      expect(at('2026-07-15T00:00:00.000Z')).toBe('2026-06-01T00:00:00.000Z');
+    });
+
+    it('วันที่ 1 ของเดือน: ยังเป็นเดือนก่อนหน้า (export เดือนก่อนหน้าแล้วก็ยังไม่ถูกลบ)', () => {
+      expect(at('2026-07-01T03:00:00.000Z')).toBe('2026-06-01T00:00:00.000Z');
+      expect(at('2026-08-01T00:00:00.000Z')).toBe('2026-07-01T00:00:00.000Z');
+    });
+
+    it('ต้นมีนาคม (กุมภาพันธ์ 28 วัน): ถอยไปมกราคมเพื่อให้ย้อน 30 วันได้ครบ', () => {
+      expect(at('2026-03-01T00:00:00.000Z')).toBe('2026-01-01T00:00:00.000Z');
+      expect(at('2026-03-02T12:00:00.000Z')).toBe('2026-01-01T00:00:00.000Z');
+      expect(at('2026-03-03T12:00:00.000Z')).toBe('2026-02-01T00:00:00.000Z');
+    });
+
+    it('ครอบคลุม 30 วันย้อนหลังเสมอ', () => {
+      for (let d = 0; d < 400; d++) {
+        const now = new Date(Date.UTC(2026, 0, 1) + d * 86_400_000);
+        expect(hotWindowStart(now).getTime()).toBeLessThanOrEqual(now.getTime() - 30 * 86_400_000);
+      }
     });
   });
 });

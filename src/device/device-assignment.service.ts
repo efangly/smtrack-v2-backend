@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeviceAssignments, Devices } from '../generated/prisma/client';
 import { AppEvents } from '../common/events/app-events';
+import { AccessScope, DeviceLocation, canAccess } from '../common/auth/access-scope';
 import { DeviceChangeActor, buildDeviceChangedEvent } from '../common/events/device-changed.event';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -9,7 +10,8 @@ import { RedisService } from '../redis/redis.service';
 /** cache ของ serial → deviceId ที่ ingest ใช้ทุกแถว จึงต้องสั้นและถูก invalidate ตอน swap เสมอ */
 const RESOLVE_TTL = 300;
 const resolveKey = (serial: string) => `assign:${serial}`;
-const wardKey = (serial: string) => `ward:${serial}`;
+const locationKey = (serial: string) => `location:${serial}`;
+const UNKNOWN_LOCATION: DeviceLocation = { tenantId: null, departmentId: null };
 
 export interface SwapResult {
   device: Devices;
@@ -50,17 +52,32 @@ export class DeviceAssignmentService {
   }
 
   /**
-   * หา ward ของจุดติดตั้งที่กล่อง `serial` ติดตั้งอยู่ ณ ตอนนี้ — ใช้กรอง SSE ตาม ward ของผู้ใช้
-   * คืน null ถ้ากล่องยังไม่ถูกติดตั้งที่ไหน (event นั้นจะเห็นได้เฉพาะ role ที่ไม่ถูก scope)
+   * หา tenant/department ของจุดติดตั้งที่กล่อง `serial` ติดตั้งอยู่ ณ ตอนนี้ — ใช้กรอง SSE ตาม scope
+   * ของผู้ใช้ กล่องที่ยังไม่ถูกติดตั้งได้ค่า null ทั้งคู่ (event นั้นจะเห็นได้เฉพาะ GLOBAL)
    */
-  resolveWard(serial: string): Promise<string | null> {
-    return this.redis.getOrSet(wardKey(serial), RESOLVE_TTL, async () => {
+  resolveLocation(serial: string): Promise<DeviceLocation> {
+    return this.redis.getOrSet(locationKey(serial), RESOLVE_TTL, async () => {
       const device = await this.prisma.devices.findUnique({
         where: { serial },
-        select: { ward: true },
+        select: { tenantId: true, departmentId: true },
       });
-      return device?.ward ?? null;
+      return device ?? UNKNOWN_LOCATION;
     });
+  }
+
+  /**
+   * ยืนยันว่าผู้ใช้เข้าถึงจุดติดตั้งนี้ได้ — นอก scope ตอบ 404 เหมือนไม่มีอยู่จริง (ไม่ยืนยันว่ามีข้อมูล
+   * ของ tenant อื่นอยู่ ตามกติกาเดียวกับ auth-service) อ่านจาก DB ตรงเพราะ tenant/department แก้ได้
+   */
+  async assertDeviceAccess(scope: AccessScope, deviceId: string): Promise<void> {
+    if (scope.kind === 'GLOBAL') return;
+    const device = await this.prisma.devices.findUnique({
+      where: { id: deviceId },
+      select: { tenantId: true, departmentId: true },
+    });
+    if (!device || !canAccess(scope, device)) {
+      throw new NotFoundException(`Device ${deviceId} not found`);
+    }
   }
 
   /**
@@ -174,14 +191,17 @@ export class DeviceAssignmentService {
    * รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ (พฤติกรรมเดิมของ API) และ staticName ของจุดติดตั้ง
    * — อย่างหลังใช้ได้แม้จุดนั้นกำลังไม่มีกล่องติดตั้งอยู่ (เช่น ถอดไปซ่อมและยังไม่มีตัวแทน)
    */
-  async resolveDeviceIdOrThrow(serialOrStaticName: string): Promise<string> {
+  async resolveDeviceIdOrThrow(serialOrStaticName: string, scope: AccessScope): Promise<string> {
     const device = await this.prisma.devices.findFirst({
       where: {
         OR: [{ serial: serialOrStaticName }, { staticName: serialOrStaticName }],
       },
-      select: { id: true },
+      select: { id: true, tenantId: true, departmentId: true },
     });
-    if (!device) throw new NotFoundException(`Device ${serialOrStaticName} not found`);
+    // นอก scope ตอบเหมือนหาไม่เจอ — ไม่ยืนยันว่ามีจุดติดตั้งของ tenant อื่นชื่อนี้อยู่
+    if (!device || !canAccess(scope, device)) {
+      throw new NotFoundException(`Device ${serialOrStaticName} not found`);
+    }
     return device.id;
   }
 
@@ -201,7 +221,7 @@ export class DeviceAssignmentService {
     await Promise.all(
       serials
         .filter((s): s is string => !!s)
-        .flatMap((s) => [this.redis.del(resolveKey(s)), this.redis.del(wardKey(s))]),
+        .flatMap((s) => [this.redis.del(resolveKey(s)), this.redis.del(locationKey(s))]),
     );
   }
 }

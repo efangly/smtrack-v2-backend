@@ -6,9 +6,14 @@ export class CreateDeviceDto {
   @IsNotEmpty()
   serial!: string;
 
+  /** tenant ที่ frontend เลือกจากฟอร์ม — ผู้ใช้ที่ไม่ใช่ SUPER/SERVICE ต้องเป็น tenant ของตัวเอง */
   @IsString()
   @IsNotEmpty()
-  ward!: string;
+  tenantId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  departmentId!: string;
 
   @IsString()
   @IsNotEmpty()

@@ -17,7 +17,9 @@ const GRPC_TEST_URL = '127.0.0.1:50061';
 process.env.GRPC_URL = GRPC_TEST_URL;
 
 const PREFIX = 'E2E-PARTNER-';
-const WARD = `${PREFIX}WARD`;
+const TENANT = `${PREFIX}TENANT`;
+/** tenant ที่ key ไม่ได้รับสิทธิ์ — มีอุปกรณ์อยู่จริง เพื่อพิสูจน์ว่า NOT_FOUND ไม่ได้มาจากหาไม่เจอเฉย ๆ */
+const OTHER_TENANT = `${PREFIX}OTHER-TENANT`;
 
 interface PartnerClient extends grpc.Client {
   GetDeviceSnapshot: (
@@ -35,8 +37,8 @@ interface PartnerClient extends grpc.Client {
     metadata: grpc.Metadata,
     callback: (err: grpc.ServiceError | null, res: unknown) => void,
   ) => void;
-  ListDevicesByWard: (
-    req: { ward: string; page?: number; limit?: number },
+  ListDevicesByTenant: (
+    req: { tenantId: string; page?: number; limit?: number },
     metadata: grpc.Metadata,
     callback: (err: grpc.ServiceError | null, res: unknown) => void,
   ) => void;
@@ -71,6 +73,7 @@ describe('Partner API (e2e, gRPC)', () => {
   let prisma: PrismaService;
   let client: PartnerClient;
   let serial: string;
+  let otherSerial: string;
   let deviceId: string;
   let keyId: string;
   const rawKey = 'pk_live_e2e-test-key';
@@ -86,10 +89,13 @@ describe('Partner API (e2e, gRPC)', () => {
     app.connectMicroservice(buildGrpcOptions(config), { inheritAppConfig: true });
     await app.startAllMicroservices();
 
-    const seed = { ...buildDevices(PREFIX)[0], ward: WARD };
+    const seed = { ...buildDevices(PREFIX)[0], tenantId: TENANT };
     const { deviceId: id } = await seedDevice(prisma, seed);
     serial = seed.serial;
     deviceId = id;
+    const otherSeed = { ...buildDevices(PREFIX)[1], tenantId: OTHER_TENANT };
+    await seedDevice(prisma, otherSeed);
+    otherSerial = otherSeed.serial;
 
     const now = Date.now();
     await prisma.logDays.createMany({
@@ -137,7 +143,7 @@ describe('Partner API (e2e, gRPC)', () => {
         name: `${PREFIX}key`,
         keyHash: createHash('sha256').update(rawKey).digest('hex'),
         keyPrefix: rawKey.slice(0, 16),
-        wards: { create: [{ ward: WARD }] },
+        tenants: { create: [{ tenantId: TENANT }] },
       },
     });
     keyId = key.id;
@@ -167,10 +173,19 @@ describe('Partner API (e2e, gRPC)', () => {
       expect(error?.code).toBe(grpc.status.UNAUTHENTICATED);
     });
 
-    it('serial ที่ ward ไม่อยู่ใน allowlist ของ key ตอบ NOT_FOUND', async () => {
+    it('serial ที่ไม่มีอยู่จริงตอบ NOT_FOUND', async () => {
       const { error } = await call<unknown>(
         client.GetDeviceSnapshot.bind(client),
         { serial: 'SOME-OTHER-SERIAL-NOT-OWNED' },
+        rawKey,
+      );
+      expect(error?.code).toBe(grpc.status.NOT_FOUND);
+    });
+
+    it('อุปกรณ์ที่มีอยู่จริงแต่อยู่ tenant ที่ key ไม่ได้รับสิทธิ์ ตอบ NOT_FOUND เหมือนกัน', async () => {
+      const { error } = await call<unknown>(
+        client.GetDeviceSnapshot.bind(client),
+        { serial: otherSerial },
         rawKey,
       );
       expect(error?.code).toBe(grpc.status.NOT_FOUND);
@@ -189,21 +204,21 @@ describe('Partner API (e2e, gRPC)', () => {
     });
   });
 
-  describe('ListDevicesByWard', () => {
-    it('ward ที่ไม่อยู่ใน allowlist ตอบ NOT_FOUND', async () => {
+  describe('ListDevicesByTenant', () => {
+    it('tenant ที่ไม่อยู่ใน allowlist ตอบ NOT_FOUND (แม้มีอุปกรณ์อยู่จริง)', async () => {
       const { error } = await call<unknown>(
-        client.ListDevicesByWard.bind(client),
-        { ward: 'SOME-OTHER-WARD-NOT-OWNED' },
+        client.ListDevicesByTenant.bind(client),
+        { tenantId: OTHER_TENANT },
         rawKey,
       );
       expect(error?.code).toBe(grpc.status.NOT_FOUND);
     });
 
-    it('คืนทุก device ใน ward พร้อม reading ล่าสุดค่าเดียวของแต่ละตัว', async () => {
+    it('คืนทุก device ของ tenant พร้อม reading ล่าสุดค่าเดียวของแต่ละตัว', async () => {
       const { response, error } = await call<{
         devices: { device: { serial: string }; latest?: { sendTime: string } }[];
         total: number;
-      }>(client.ListDevicesByWard.bind(client), { ward: WARD }, rawKey);
+      }>(client.ListDevicesByTenant.bind(client), { tenantId: TENANT }, rawKey);
 
       expect(error).toBeUndefined();
       expect(response?.total).toBe(1);
@@ -235,7 +250,7 @@ describe('Partner API (e2e, gRPC)', () => {
       expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
     });
 
-    it('ward ที่ไม่อยู่ใน allowlist ตอบ NOT_FOUND', async () => {
+    it('serial นอก tenant ของ key ตอบ NOT_FOUND', async () => {
       const { error } = await history(
         { serial: 'SOME-OTHER-SERIAL-NOT-OWNED', range: 'DAY_7' },
         rawKey,
@@ -288,7 +303,7 @@ describe('Partner API (e2e, gRPC)', () => {
       expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
     });
 
-    it('ward ที่ไม่อยู่ใน allowlist ตอบ NOT_FOUND', async () => {
+    it('serial นอก tenant ของ key ตอบ NOT_FOUND', async () => {
       const { error } = await list(
         { serial: 'SOME-OTHER-SERIAL-NOT-OWNED', range: 'DAY_7' },
         rawKey,
@@ -338,7 +353,7 @@ describe('Partner API (e2e, gRPC)', () => {
     it('ปฏิเสธเมื่อไม่แนบ bearer token', async () => {
       const res = await request(app.getHttpServer())
         .post(`${API_PREFIX}/admin/partner-keys`)
-        .send({ name: `${PREFIX}admin-created`, wards: [WARD] });
+        .send({ name: `${PREFIX}admin-created`, tenantIds: [TENANT] });
       expect(res.status).toBe(401);
     });
 
@@ -346,7 +361,7 @@ describe('Partner API (e2e, gRPC)', () => {
       const res = await request(app.getHttpServer())
         .post(`${API_PREFIX}/admin/partner-keys`)
         .set('Authorization', bearerUser({ role: 'ADMIN' }))
-        .send({ name: `${PREFIX}admin-created`, wards: [WARD] });
+        .send({ name: `${PREFIX}admin-created`, tenantIds: [TENANT] });
       expect(res.status).toBe(403);
     });
 
@@ -354,12 +369,12 @@ describe('Partner API (e2e, gRPC)', () => {
       const res = await request(app.getHttpServer())
         .post(`${API_PREFIX}/admin/partner-keys`)
         .set('Authorization', bearerUser())
-        .send({ name: `${PREFIX}admin-created`, wards: [WARD] });
+        .send({ name: `${PREFIX}admin-created`, tenantIds: [TENANT] });
 
       expect(res.status).toBe(201);
       const created = unwrap(res.body);
       expect(created.apiKey).toMatch(/^pk_live_/);
-      expect(created.wards).toEqual([WARD]);
+      expect(created.tenantIds).toEqual([TENANT]);
       issuedKeyId = created.id;
       issuedApiKey = created.apiKey;
 
@@ -384,7 +399,7 @@ describe('Partner API (e2e, gRPC)', () => {
       expect(res.status).toBe(200);
       const detail = unwrap(res.body);
       expect(detail.id).toBe(issuedKeyId);
-      expect(detail.wards).toEqual([WARD]);
+      expect(detail.tenantIds).toEqual([TENANT]);
       expect(detail).not.toHaveProperty('keyHash');
       expect(detail).not.toHaveProperty('apiKey');
     });

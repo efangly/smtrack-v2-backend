@@ -23,6 +23,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { DevicePayloadDto } from '../common/dto/device-payload.dto';
+import { JwtPayloadDto } from '../common/dto/payload.dto';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
 
 @ApiTags('logday')
@@ -36,8 +37,13 @@ export class LogdayController {
 
   /** รับได้ทั้ง serial ของกล่องที่ติดตั้งอยู่ และ staticName ของจุดติดตั้ง (ดู GraphController) */
   @Get(':serialOrName')
-  async summary(@Param('serialOrName') serialOrName: string) {
-    const deviceId = await this.assignments.resolveDeviceIdOrThrow(serialOrName);
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('jwt')
+  async summary(
+    @Param('serialOrName') serialOrName: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ) {
+    const deviceId = await this.assignments.resolveDeviceIdOrThrow(serialOrName, req.user.scope);
     return this.logdayService.summaryByDevice(deviceId);
   }
 

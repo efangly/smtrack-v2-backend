@@ -4,6 +4,9 @@ import { Pool } from 'pg';
 import { ObjectStorageService } from './object-storage.service';
 import { ArchiveExportService } from './archive-export.service';
 import { ArchiveRestoreService } from './archive-restore.service';
+import { ArchiveStatusService } from './archive-status.service';
+import { RestoredWindowService } from './restored-window.service';
+import { ArchiveJobService } from './archive-job.service';
 import { ArchiveController } from './archive.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AppConfig } from '../config/configuration';
@@ -24,6 +27,9 @@ export { PG_POOL };
     ObjectStorageService,
     ArchiveExportService,
     ArchiveRestoreService,
+    ArchiveJobService,
+    RestoredWindowService,
+    ArchiveStatusService,
     {
       provide: PG_POOL,
       inject: [ConfigService],
@@ -35,6 +41,13 @@ export { PG_POOL };
         }),
     },
   ],
-  exports: [ArchiveRestoreService],
+  exports: [
+    ArchiveRestoreService,
+    ArchiveExportService,
+    ArchiveJobService,
+    RestoredWindowService,
+    ArchiveStatusService,
+    PG_POOL,
+  ],
 })
 export class BackupModule {}

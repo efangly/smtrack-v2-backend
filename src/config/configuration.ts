@@ -6,7 +6,10 @@ export interface AppConfig {
     brokerUrl: string;
     username?: string;
     password?: string;
+    /** `${MQTT_CLIENT_ID}-${instance}` — ต้องไม่ซ้ำกันข้าม replica ไม่งั้น broker เตะกันวนไม่จบ */
     clientId: string;
+    /** clean session ของฝั่ง subscribe (default true) — ดู buildMqttOptions */
+    cleanSession: boolean;
     logTopic: string;
     /** topic realtime ~5s ไม่บันทึก DB — ใช้แค่ push ให้ sse ตอนปรับค่าชดเชย ยังไม่ได้ตกลง topic จริงกับฝั่ง firmware */
     realtimeTopic: string;
@@ -19,12 +22,18 @@ export interface AppConfig {
     logQueue: string;
     fcmQueue: string;
   };
+  /** legacy sync (ADR-0007) — ชั่วคราวจนถึง cutover */
+  legacySync: {
+    enabled: boolean;
+    exchange: string;
+    queue: string;
+    deadLetterQueue: string;
+  };
   jwtSecret: string;
   deviceSecret: string;
   /** Partner API (third-party) gRPC listen address — ดู grpc.config.ts */
   grpcUrl: string;
   archive: {
-    retentionMonths: number;
     s3: {
       endpoint?: string;
       accessKey: string;
@@ -76,7 +85,10 @@ export default (): AppConfig => ({
     brokerUrl: process.env.MQTT_BROKER_URL ?? 'mqtt://localhost:1883',
     username: process.env.MQTT_USERNAME || undefined,
     password: process.env.MQTT_PASSWORD || undefined,
-    clientId: process.env.MQTT_CLIENT_ID ?? 'nestjs-iot-service',
+    clientId: `${process.env.MQTT_CLIENT_ID || 'nestjs-iot-service'}-${
+      process.env.MQTT_INSTANCE_ID || process.env.HOSTNAME || process.pid
+    }`,
+    cleanSession: process.env.MQTT_CLEAN_SESSION !== 'false',
     logTopic: process.env.MQTT_LOG_TOPIC ?? 'devices/+/log',
     // TODO: กรอก topic จริงตามที่ตกลงกับฝั่ง firmware — ค่า default เป็นแค่ placeholder ตาม convention เดิม
     realtimeTopic: process.env.MQTT_REALTIME_TOPIC ?? 'devices/+/telemetry',
@@ -89,11 +101,16 @@ export default (): AppConfig => ({
     logQueue: process.env.RABBITMQ_LOG_QUEUE ?? 'log_queue',
     fcmQueue: process.env.RABBITMQ_FCM_QUEUE ?? 'fcm_notification_queue',
   },
+  legacySync: {
+    enabled: process.env.LEGACY_SYNC_ENABLED === 'true',
+    exchange: process.env.RABBITMQ_LEGACY_EXCHANGE || 'legacy.sync',
+    queue: process.env.RABBITMQ_LEGACY_SYNC_QUEUE || 'legacy_sync_queue',
+    deadLetterQueue: process.env.RABBITMQ_LEGACY_SYNC_DLQ || 'legacy_sync_dlq',
+  },
   jwtSecret: process.env.JWT_SECRET ?? '',
   deviceSecret: process.env.DEVICE_SECRET ?? '',
   grpcUrl: process.env.GRPC_URL ?? '0.0.0.0:50051',
   archive: {
-    retentionMonths: parseInt(process.env.ARCHIVE_RETENTION_MONTHS ?? '6', 10),
     s3: {
       endpoint: process.env.ARCHIVE_S3_ENDPOINT || undefined,
       accessKey: process.env.ARCHIVE_S3_ACCESS_KEY ?? '',

@@ -24,8 +24,8 @@ interface ListDeviceTelemetryRequest extends GetDeviceHistoryRequest {
   limit?: number;
 }
 
-interface ListDevicesByWardRequest {
-  ward: string;
+interface ListDevicesByTenantRequest {
+  tenantId: string;
   page?: number;
   limit?: number;
 }
@@ -156,15 +156,18 @@ export class PartnerController {
   }
 
   @SkipInterceptor()
-  @GrpcMethod('PartnerService', 'ListDevicesByWard')
-  async listDevicesByWard(request: ListDevicesByWardRequest & WithPartnerApiKey) {
-    if (!request.ward) {
-      throw new RpcException({ code: status.INVALID_ARGUMENT, message: 'ward is required' });
+  @GrpcMethod('PartnerService', 'ListDevicesByTenant')
+  async listDevicesByTenant(request: ListDevicesByTenantRequest & WithPartnerApiKey) {
+    if (!request.tenantId) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: 'tenant_id is required',
+      });
     }
     const apiKey = request.__partnerApiKey!;
     let statusCode = status.OK;
     try {
-      const result = await this.partnerService.listDevicesByWard(apiKey, request.ward, {
+      const result = await this.partnerService.listDevicesByTenant(apiKey, request.tenantId, {
         page: request.page,
         limit: request.limit,
       });
@@ -183,8 +186,8 @@ export class PartnerController {
     } finally {
       void this.partnerService.logRequest(
         apiKey.id,
-        { ward: request.ward },
-        'partner.PartnerService/ListDevicesByWard',
+        { tenantId: request.tenantId },
+        'partner.PartnerService/ListDevicesByTenant',
         statusCode,
       );
     }

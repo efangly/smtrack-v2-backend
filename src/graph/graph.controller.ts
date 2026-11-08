@@ -1,5 +1,7 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
+import { JwtPayloadDto } from '../common/dto/payload.dto';
 import { GraphService, ProbeSeries } from './graph.service';
 import { JwtAuthGuard } from '../common/guards/jwt.guard';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
@@ -25,8 +27,9 @@ export class GraphController {
   async series(
     @Param('serialOrName') serialOrName: string,
     @Query() query: QueryGraphDto,
+    @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<ProbeSeries[]> {
-    const deviceId = await this.assignments.resolveDeviceIdOrThrow(serialOrName);
+    const deviceId = await this.assignments.resolveDeviceIdOrThrow(serialOrName, req.user.scope);
     return this.graphService.series(deviceId, query);
   }
 }

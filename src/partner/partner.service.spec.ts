@@ -14,7 +14,7 @@ describe('PartnerService', () => {
   };
   let deviceService: { findOne: jest.Mock };
 
-  const apiKey: PartnerApiKeyContext = { id: 'key-1', name: 'Acme', wards: new Set(['ICU']) };
+  const apiKey: PartnerApiKeyContext = { id: 'key-1', name: 'Acme', tenants: new Set(['T1']) };
 
   beforeEach(() => {
     prisma = {
@@ -32,10 +32,10 @@ describe('PartnerService', () => {
   });
 
   describe('getDeviceSnapshot', () => {
-    it('resolves the device first, then throws NotFoundException if its ward is not allowed', async () => {
+    it('resolves the device first, then throws NotFoundException if its tenant is not allowed', async () => {
       deviceService.findOne.mockResolvedValue({
         serial: 'SN-1',
-        ward: 'OPD',
+        tenantId: 'T2',
         name: 'x',
         status: true,
         online: true,
@@ -44,14 +44,28 @@ describe('PartnerService', () => {
       await expect(service.getDeviceSnapshot(apiKey, 'SN-1')).rejects.toBeInstanceOf(
         NotFoundException,
       );
-      expect(deviceService.findOne).toHaveBeenCalledWith('SN-1');
+      expect(deviceService.findOne).toHaveBeenCalledWith('SN-1', { kind: 'GLOBAL' });
       expect(prisma.logDays.findMany).not.toHaveBeenCalled();
     });
 
-    it('returns curated metadata + last-1-hour timeseries for an allowed ward', async () => {
+    it('device that has no tenant yet (not backfilled) is NOT_FOUND for every key', async () => {
       deviceService.findOne.mockResolvedValue({
         serial: 'SN-1',
-        ward: 'ICU',
+        tenantId: null,
+        name: 'x',
+        status: true,
+        online: true,
+      });
+
+      await expect(service.getDeviceSnapshot(apiKey, 'SN-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('returns curated metadata + last-1-hour timeseries for an allowed tenant', async () => {
+      deviceService.findOne.mockResolvedValue({
+        serial: 'SN-1',
+        tenantId: 'T1',
         name: 'ตู้เย็น ICU เตียง 3',
         status: true,
         online: true,
@@ -98,10 +112,10 @@ describe('PartnerService', () => {
   });
 
   describe('getDeviceHistory', () => {
-    it('throws NotFoundException for a ward outside the allowlist before querying', async () => {
+    it('throws NotFoundException for a tenant outside the allowlist before querying', async () => {
       deviceService.findOne.mockResolvedValue({
         serial: 'SN-1',
-        ward: 'OPD',
+        tenantId: 'T2',
         name: 'x',
         status: true,
         online: true,
@@ -122,7 +136,7 @@ describe('PartnerService', () => {
       async (range, bucket, days) => {
         deviceService.findOne.mockResolvedValue({
           serial: 'SN-1',
-          ward: 'ICU',
+          tenantId: 'T1',
           name: 'F',
           status: true,
           online: true,
@@ -189,10 +203,10 @@ describe('PartnerService', () => {
       probe: '1',
     });
 
-    it('throws NotFoundException for a ward outside the allowlist before querying', async () => {
+    it('throws NotFoundException for a tenant outside the allowlist before querying', async () => {
       deviceService.findOne.mockResolvedValue({
         serial: 'SN-1',
-        ward: 'OPD',
+        tenantId: 'T2',
         name: 'x',
         status: true,
         online: true,
@@ -207,7 +221,7 @@ describe('PartnerService', () => {
     it('paginates newest-first with a stable tiebreaker and a range cutoff', async () => {
       deviceService.findOne.mockResolvedValue({
         serial: 'SN-1',
-        ward: 'ICU',
+        tenantId: 'T1',
         name: 'F',
         status: true,
         online: true,
@@ -233,7 +247,7 @@ describe('PartnerService', () => {
     it('applies defaults and caps limit at 200', async () => {
       deviceService.findOne.mockResolvedValue({
         serial: 'SN-1',
-        ward: 'ICU',
+        tenantId: 'T1',
         name: 'F',
         status: true,
         online: true,
@@ -248,19 +262,19 @@ describe('PartnerService', () => {
     });
   });
 
-  describe('listDevicesByWard', () => {
-    it('throws NotFoundException for a ward outside the allowlist', async () => {
-      await expect(service.listDevicesByWard(apiKey, 'OPD', {})).rejects.toBeInstanceOf(
+  describe('listDevicesByTenant', () => {
+    it('throws NotFoundException for a tenant outside the allowlist', async () => {
+      await expect(service.listDevicesByTenant(apiKey, 'T2', {})).rejects.toBeInstanceOf(
         NotFoundException,
       );
       expect(prisma.devices.findMany).not.toHaveBeenCalled();
     });
 
-    it('returns metadata + the single latest reading per device for an allowed ward', async () => {
+    it('returns metadata + the single latest reading per device for an allowed tenant', async () => {
       prisma.devices.findMany.mockResolvedValue([
         {
           serial: 'SN-1',
-          ward: 'ICU',
+          tenantId: 'T1',
           name: 'Fridge 1',
           status: true,
           online: true,
@@ -285,20 +299,20 @@ describe('PartnerService', () => {
         probe: '1',
       });
 
-      const result = await service.listDevicesByWard(apiKey, 'ICU', { page: 1, limit: 20 });
+      const result = await service.listDevicesByTenant(apiKey, 'T1', { page: 1, limit: 20 });
 
       expect(result.total).toBe(1);
       expect(result.devices).toHaveLength(1);
       expect(result.devices[0].device.serial).toBe('SN-1');
       expect(result.devices[0].latest?.temp).toBe(5);
-      expect(prisma.devices.findMany.mock.calls[0][0].where).toEqual({ ward: 'ICU' });
+      expect(prisma.devices.findMany.mock.calls[0][0].where).toEqual({ tenantId: 'T1' });
     });
 
     it('returns latest: null for a device with no telemetry yet', async () => {
       prisma.devices.findMany.mockResolvedValue([
         {
           serial: 'SN-2',
-          ward: 'ICU',
+          tenantId: 'T1',
           name: 'Fridge 2',
           status: true,
           online: false,
@@ -308,7 +322,7 @@ describe('PartnerService', () => {
       prisma.devices.count.mockResolvedValue(1);
       prisma.logDays.findFirst.mockResolvedValue(null);
 
-      const result = await service.listDevicesByWard(apiKey, 'ICU', {});
+      const result = await service.listDevicesByTenant(apiKey, 'T1', {});
 
       expect(result.devices[0].latest).toBeNull();
     });

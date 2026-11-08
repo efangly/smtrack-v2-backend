@@ -44,7 +44,11 @@ describe('GrpcApiKeyAuthGuard', () => {
   });
 
   it('attaches the resolved key context onto the request data and allows the call', async () => {
-    const apiKey: PartnerApiKeyContext = { id: 'key-1', name: 'Acme', wards: new Set(['ICU']) };
+    const apiKey: PartnerApiKeyContext = {
+      id: 'key-1',
+      name: 'Acme',
+      tenants: new Set(['T1']),
+    };
     partnerApiKeyService.validate.mockResolvedValue(apiKey);
     const data: WithPartnerApiKey = {};
     const context = makeContext('pk_live_valid', data);

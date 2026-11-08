@@ -182,7 +182,8 @@ async function migrateDevices(
       data: {
         staticName: legacy.staticName,
         serial: legacy.id,
-        ward: legacy.ward,
+        // ID ward ของ legacy คือ departmentId ใน auth-service รุ่นใหม่ (ADR-0004)
+        departmentId: legacy.ward,
         name: legacy.name,
         status: legacy.status,
         seq: legacy.seq,
@@ -221,7 +222,9 @@ async function migrateProbes(
   serialToNewDeviceId: Map<string, string>,
 ): Promise<Summary> {
   const summary = newSummary();
-  const existingProbes = await target.probes.findMany({ select: { deviceId: true, channel: true } });
+  const existingProbes = await target.probes.findMany({
+    select: { deviceId: true, channel: true },
+  });
   const existingKeys = new Set(existingProbes.map((p) => `${p.deviceId}|${p.channel}`));
 
   const { rows } = await source.query<LegacyProbe>('SELECT * FROM "Probes"');
@@ -446,13 +449,20 @@ async function main(): Promise<void> {
   if (!sourceUrl) throw new Error('SOURCE_DATABASE_URL is required (legacy smtrack-device DB)');
 
   const source = new Pool({ connectionString: sourceUrl });
-  const target = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
+  const target = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
+  });
 
   try {
     console.log('migrating Devices → Hardware + Devices + DeviceAssignments ...');
-    const { summary: devicesSummary, serialToNewDeviceId, staticNameToSerial } =
-      await migrateDevices(source, target);
-    console.log(`  devices: created=${devicesSummary.created} duplicate=${devicesSummary.duplicate}`);
+    const {
+      summary: devicesSummary,
+      serialToNewDeviceId,
+      staticNameToSerial,
+    } = await migrateDevices(source, target);
+    console.log(
+      `  devices: created=${devicesSummary.created} duplicate=${devicesSummary.duplicate}`,
+    );
 
     console.log('migrating Probes ...');
     const probesSummary = await migrateProbes(source, target, serialToNewDeviceId);

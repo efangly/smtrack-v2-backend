@@ -67,7 +67,8 @@ export type DeviceFields = Omit<DeviceSeed, 'serial' | 'firmware'>;
 
 export interface DeviceSeed {
   serial: string;
-  ward: string;
+  tenantId: string;
+  departmentId: string;
   staticName: string;
   name: string;
   status: boolean;
@@ -126,7 +127,9 @@ export const serialFor = (prefix: string, n: number): string =>
 export function buildDevices(prefix: string): DeviceSeed[] {
   return [1, 2, 3].map((n) => ({
     serial: serialFor(prefix, n),
-    ward: n === 3 ? 'ICU' : 'OPD',
+    // ตรงกับ E2E_TENANT ใน test/utils/auth.ts
+    tenantId: 'e2e-tenant',
+    departmentId: n === 3 ? 'ICU' : 'OPD',
     staticName: `${prefix}Fridge ${n}`,
     name: `${prefix}Fridge ${n}`,
     status: true,

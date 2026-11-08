@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Configs, Devices, Probes } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DeviceService } from '../device/device.service';
+import { SYSTEM_SCOPE } from '../common/auth/access-scope';
 import { ProbeService } from '../probe/probe.service';
 import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { DeviceConfigService } from '../device-config/device-config.service';
@@ -33,7 +34,7 @@ export class AdjustService {
   ) {}
 
   async getSnapshot(serial: string): Promise<AdjustSnapshot> {
-    const device = await this.deviceService.findOne(serial);
+    const device = await this.deviceService.findOne(serial, SYSTEM_SCOPE);
     const [config, probe] = await Promise.all([
       this.prisma.configs.findUnique({ where: { deviceId: device.id } }),
       this.prisma.probes.findMany({ where: { deviceId: device.id }, orderBy: { channel: 'asc' } }),
@@ -42,18 +43,18 @@ export class AdjustService {
   }
 
   async updateProbe(serial: string, channel: string, dto: UpdateProbeDto): Promise<Probes> {
-    const device = await this.deviceService.findOne(serial);
+    const device = await this.deviceService.findOne(serial, SYSTEM_SCOPE);
     const probeId = await this.probeResolver.resolveProbeId(device.id, channel);
     return this.probeService.update(probeId, dto);
   }
 
   async updateConfig(serial: string, dto: UpdateDeviceConfigDto): Promise<Configs> {
-    const device = await this.deviceService.findOne(serial);
+    const device = await this.deviceService.findOne(serial, SYSTEM_SCOPE);
     // config ที่ไม่มีอยู่จริงจะโดน Prisma P2025 -> global HttpExceptionFilter แปลงเป็น 404 เอง
     return this.configService.update(device.id, dto);
   }
 
   async updateDevice(serial: string, dto: UpdateAdjustDeviceDto): Promise<Devices> {
-    return this.deviceService.update(serial, dto);
+    return this.deviceService.update(serial, dto, SYSTEM_SCOPE);
   }
 }

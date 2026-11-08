@@ -87,7 +87,9 @@ describe('Backup archive export/restore (e2e, real MinIO + Postgres)', () => {
     storage = moduleRef.get(ObjectStorageService);
 
     // ป้องกันเขียนทับ backup จริง: ต้องไม่มี export ของเดือนนี้อยู่ก่อนแล้ว
-    const existing = await prisma.archiveExport.findUnique({ where: { month: MONTH_START } });
+    const existing = await prisma.archiveExport.findUnique({
+      where: { sourceTable_month: { sourceTable: 'log_days', month: MONTH_START } },
+    });
     if (existing) {
       throw new Error(
         `พบ archive_export ของเดือน ${MONTH} อยู่แล้ว (rowCount=${existing.rowCount}) — ` +
@@ -119,7 +121,9 @@ describe('Backup archive export/restore (e2e, real MinIO + Postgres)', () => {
     await expect(storage.exists(archiveObjectKey(MONTH))).resolves.toBe(true);
     await expect(storage.exists(metaObjectKey(MONTH))).resolves.toBe(true);
 
-    const record = await prisma.archiveExport.findUnique({ where: { month: MONTH_START } });
+    const record = await prisma.archiveExport.findUnique({
+      where: { sourceTable_month: { sourceTable: 'log_days', month: MONTH_START } },
+    });
     expect(record).not.toBeNull();
     expect(Number(record!.rowCount)).toBe(rowCount);
     expect(record!.sha256).toBe(meta.sha256);

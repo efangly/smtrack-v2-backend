@@ -82,15 +82,21 @@ export class NotificationController {
   @Patch(':id/read')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('jwt')
-  markRead(@Param('id') id: string): Promise<Notifications> {
-    return this.notificationService.markRead(id);
+  markRead(
+    @Param('id') id: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<Notifications> {
+    return this.notificationService.markRead(id, req.user);
   }
 
   @Get(':serial')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('jwt')
-  findBySerial(@Param('serial') serial: string): Promise<Notifications[]> {
-    return this.notificationService.findBySerial(serial);
+  findBySerial(
+    @Param('serial') serial: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<Notifications[]> {
+    return this.notificationService.findBySerial(serial, req.user);
   }
 
   @Put(':id')

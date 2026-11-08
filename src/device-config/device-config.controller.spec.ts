@@ -1,3 +1,5 @@
+import { NotFoundException } from '@nestjs/common';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DeviceConfigController } from './device-config.controller';
 import { DeviceConfigService } from './device-config.service';
@@ -11,10 +13,18 @@ describe('DeviceConfigController', () => {
     remove: jest.Mock;
   };
 
-  const user = { id: 'user-1', name: 'Somchai', role: 'ADMIN', wardId: 'ward-1' };
+  const user = {
+    id: 'user-1',
+    name: 'Somchai',
+    role: 'ADMIN',
+    scope: { kind: 'TENANT' as const, tenantId: 'tenant-1', departments: 'ALL' as const },
+  };
   const req = { user } as never;
 
+  let assignments: { assertDeviceAccess: jest.Mock };
+
   beforeEach(async () => {
+    assignments = { assertDeviceAccess: jest.fn().mockResolvedValue(undefined) };
     configService = {
       create: jest.fn(),
       findByDevice: jest.fn(),
@@ -24,7 +34,10 @@ describe('DeviceConfigController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [DeviceConfigController],
-      providers: [{ provide: DeviceConfigService, useValue: configService }],
+      providers: [
+        { provide: DeviceConfigService, useValue: configService },
+        { provide: DeviceAssignmentService, useValue: assignments },
+      ],
     }).compile();
 
     controller = module.get(DeviceConfigController);
@@ -41,9 +54,23 @@ describe('DeviceConfigController', () => {
   it('findByDevice เรียก service ด้วย deviceId', async () => {
     configService.findByDevice.mockResolvedValue({ id: 'cfg-1' });
 
-    await controller.findByDevice('dev-1');
+    await controller.findByDevice('dev-1', req);
 
+    expect(assignments.assertDeviceAccess).toHaveBeenCalledWith(user.scope, 'dev-1');
     expect(configService.findByDevice).toHaveBeenCalledWith('dev-1');
+  });
+
+  it('จุดติดตั้งนอก scope ถูกปฏิเสธก่อนถึง service ทุก route', async () => {
+    assignments.assertDeviceAccess.mockRejectedValue(new NotFoundException());
+
+    await expect(controller.findByDevice('dev-2', req)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(controller.update('dev-2', { ssid: 'X' }, req)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(controller.remove('dev-2', req)).rejects.toBeInstanceOf(NotFoundException);
+    expect(configService.findByDevice).not.toHaveBeenCalled();
+    expect(configService.update).not.toHaveBeenCalled();
+    expect(configService.remove).not.toHaveBeenCalled();
   });
 
   it('update ส่ง deviceId, dto และ actor ให้ service', async () => {

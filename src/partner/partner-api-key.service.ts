@@ -11,7 +11,7 @@ const KEY_PREFIX = 'pk_live_';
 export interface PartnerApiKeyContext {
   id: string;
   name: string;
-  wards: Set<string>;
+  tenants: Set<string>;
 }
 
 export interface CreatedPartnerApiKey {
@@ -20,7 +20,7 @@ export interface CreatedPartnerApiKey {
   /** โชว์ครั้งเดียวตอนสร้าง — หลังจากนี้ไม่มีทางเรียกดู plaintext กลับมาได้อีก */
   apiKey: string;
   keyPrefix: string;
-  wards: string[];
+  tenantIds: string[];
   createAt: Date;
 }
 
@@ -29,7 +29,7 @@ export interface PartnerApiKeySummary {
   name: string;
   keyPrefix: string;
   revokedAt: Date | null;
-  wards: string[];
+  tenantIds: string[];
   createAt: Date;
 }
 
@@ -40,7 +40,7 @@ function hashKey(rawKey: string): string {
 /**
  * ออก/จัดการ Partner API Key — key จริงไม่ถูกเก็บที่ไหนเลยหลังสร้าง มีแค่ SHA-256 hash
  * ใน DB เท่านั้น (มาตรฐานเดียวกับ Stripe/GitHub token)
- * scope ด้วย ward ตาม ADR-0003 (แทน per-serial allowlist เดิมของ ADR-0002)
+ * scope ด้วย tenant ตาม ADR-0003/0004 (แทน per-serial allowlist เดิมของ ADR-0002)
  */
 @Injectable()
 export class PartnerApiKeyService {
@@ -55,11 +55,11 @@ export class PartnerApiKeyService {
         name: dto.name,
         keyHash: hashKey(rawKey),
         keyPrefix,
-        wards: {
-          create: dto.wards.map((ward) => ({ ward })),
+        tenants: {
+          create: dto.tenantIds.map((tenantId) => ({ tenantId })),
         },
       },
-      include: { wards: true },
+      include: { tenants: true },
     });
 
     return {
@@ -67,7 +67,7 @@ export class PartnerApiKeyService {
       name: created.name,
       apiKey: rawKey,
       keyPrefix: created.keyPrefix,
-      wards: created.wards.map((w) => w.ward),
+      tenantIds: created.tenants.map((t) => t.tenantId),
       createAt: created.createAt,
     };
   }
@@ -75,7 +75,7 @@ export class PartnerApiKeyService {
   async findAll(pagination: PaginationQueryDto): Promise<Paginated<PartnerApiKeySummary>> {
     const [rows, total] = await Promise.all([
       this.prisma.partnerApiKeys.findMany({
-        include: { wards: true },
+        include: { tenants: true },
         orderBy: { createAt: 'desc' },
         skip: paginationSkip(pagination),
         take: pagination.limit ?? 20,
@@ -88,7 +88,7 @@ export class PartnerApiKeyService {
   async findOne(id: string): Promise<PartnerApiKeySummary> {
     const row = await this.prisma.partnerApiKeys.findUnique({
       where: { id },
-      include: { wards: true },
+      include: { tenants: true },
     });
     if (!row) throw new NotFoundException(`Partner API key ${id} not found`);
     return toSummary(row);
@@ -100,7 +100,7 @@ export class PartnerApiKeyService {
     const row = await this.prisma.partnerApiKeys.update({
       where: { id },
       data: { revokedAt: new Date() },
-      include: { wards: true },
+      include: { tenants: true },
     });
     return toSummary(row);
   }
@@ -109,10 +109,14 @@ export class PartnerApiKeyService {
   async validate(rawKey: string): Promise<PartnerApiKeyContext | null> {
     const row = await this.prisma.partnerApiKeys.findUnique({
       where: { keyHash: hashKey(rawKey) },
-      include: { wards: true },
+      include: { tenants: true },
     });
     if (!row || row.revokedAt) return null;
-    return { id: row.id, name: row.name, wards: new Set(row.wards.map((w) => w.ward)) };
+    return {
+      id: row.id,
+      name: row.name,
+      tenants: new Set(row.tenants.map((t) => t.tenantId)),
+    };
   }
 }
 
@@ -122,14 +126,14 @@ function toSummary(row: {
   keyPrefix: string;
   revokedAt: Date | null;
   createAt: Date;
-  wards: { ward: string }[];
+  tenants: { tenantId: string }[];
 }): PartnerApiKeySummary {
   return {
     id: row.id,
     name: row.name,
     keyPrefix: row.keyPrefix,
     revokedAt: row.revokedAt,
-    wards: row.wards.map((w) => w.ward),
+    tenantIds: row.tenants.map((t) => t.tenantId),
     createAt: row.createAt,
   };
 }

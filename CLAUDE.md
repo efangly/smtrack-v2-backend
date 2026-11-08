@@ -83,6 +83,7 @@ src/
 ├── rabbitmq/                    # @Global() module — event bus ภายในระหว่าง microservice (ไม่ใช่การสื่อสารกับอุปกรณ์)
 │                                 # ทั้ง consume (device online/offline, log/notification จาก legacy) และ publish (fcm-push ไปยัง FCM service แยกต่างหาก) ผ่าน RabbitmqService/ClientProxy
 ├── consumer/                    # รับ event จาก rabbitmq แล้วส่งต่อ business logic
+├── legacy-sync/                 # ชั่วคราว: consume snapshot จากระบบเดิมผ่าน exchange legacy.sync (ADR-0007) — ลบหลัง cutover
 └── common/
     ├── filters/
     ├── interceptors/
@@ -130,8 +131,8 @@ datasource db {
 model Devices {
   id           String          @id @default(uuid())
   serial       String          @unique
-  ward         String
-  hospital     String
+  tenantId     String?         // tenant ของ auth-service — ขอบเขตการเห็นข้อมูล ดู docs/adr/0004-device-tenant-scope.md
+  departmentId String          // department ของ auth-service (เดิมชื่อ ward) — แบ่งย่อยใน tenant
   staticName   String
   name         String?
   status       Boolean

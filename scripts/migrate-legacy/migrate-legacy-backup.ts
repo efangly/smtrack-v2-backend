@@ -246,7 +246,7 @@ async function migrateLogDaysMonth(
   await storage.putJson(metaObjectKey(month), meta);
 
   await target.archiveExport.upsert({
-    where: { month: from },
+    where: { sourceTable_month: { sourceTable: 'log_days', month: from } },
     create: { month: from, rowCount: BigInt(rowCount), objectKey: key, sha256: meta.sha256 },
     update: {
       rowCount: BigInt(rowCount),

@@ -21,15 +21,30 @@ export function signJwt(
   return `${head}.${body}.${signature}`;
 }
 
+/** claim ของ access token จาก auth-service รุ่น tenant/department */
 export interface UserClaims {
   id: string;
   name: string;
   role: string;
-  wardId: string;
+  tenantId: string;
+  departmentIds: string[];
+  /** claim ที่ auth-service ยังไม่ออกให้ (docs/auth-service-claim-spec.md) — ไม่ส่ง = ตาม departmentIds */
+  departmentScope?: 'ALL' | 'SELECTED';
+  typ: string;
 }
 
-/** ward ตรงกับ buildDevices() ตัวแรก และ role SUPER ผ่าน RolesGuard ทุก endpoint */
-const DEFAULT_USER: UserClaims = { id: 'e2e-user', name: 'E2E User', role: 'SUPER', wardId: 'OPD' };
+/** tenant ที่ buildDevices() ใช้ — ผู้ใช้ที่ถูก scope ต้องอยู่ tenant นี้ถึงจะเห็นอุปกรณ์ที่ seed */
+export const E2E_TENANT = 'e2e-tenant';
+
+/** tenant/department ตรงกับ buildDevices() ตัวแรก และ role SUPER ผ่าน RolesGuard ทุก endpoint */
+const DEFAULT_USER: UserClaims = {
+  id: 'e2e-user',
+  name: 'E2E User',
+  role: 'SUPER',
+  tenantId: E2E_TENANT,
+  departmentIds: ['OPD'],
+  typ: 'access',
+};
 
 /** Authorization header ของ user JWT (JwtAuthGuard) */
 export function bearerUser(overrides: Partial<UserClaims> = {}): string {

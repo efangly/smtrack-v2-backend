@@ -1,8 +1,8 @@
 import { ForbiddenException, Injectable, Logger, MessageEvent } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { Observable, Subject, concat, defer } from 'rxjs';
-import { filter, finalize, map } from 'rxjs/operators';
-import { isWardScoped } from '../common/auth/ward-scope';
+import { Observable, Subject, concat, defer, from, of } from 'rxjs';
+import { concatMap, filter, finalize, map } from 'rxjs/operators';
+import { DeviceLocation, canAccess, scopeKey } from '../common/auth/access-scope';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
 import { AppEvents } from '../common/events/app-events';
 import { DeviceChangedEvent } from '../common/events/device-changed.event';
@@ -20,19 +20,28 @@ interface RealtimeReading {
 export const SSE_CHANNELS = ['telemetry', 'notification', 'device'] as const;
 export type SseChannel = (typeof SSE_CHANNELS)[number];
 
+/** นับ unread ตาม scope ของผู้ใช้ — NotificationService เป็นคน register (เลี่ยง circular DI) */
+export type UnreadCounter = (user: JwtPayloadDto) => Promise<number>;
+
 interface StreamEnvelope {
   channel: SseChannel;
   data: unknown;
-  /** ward ของจุดติดตั้งที่ event นี้เกิด — null = ไม่รู้ (กล่องยังไม่ถูกติดตั้ง) */
-  ward: string | null;
+  /** tenant/department ของจุดติดตั้งที่ event นี้เกิด — null = ไม่รู้ (เห็นได้เฉพาะ GLOBAL) */
+  location: DeviceLocation;
+  /**
+   * unreadCount ที่คำนวณใหม่ต่อ scope ของผู้รับ ผูกกับ event นี้เท่านั้น — subscriber ที่ scope
+   * เดียวกันใช้ query เดียวกัน และไม่มี cache ข้าม event ที่จะคืนเลขเก่าหลัง mark read
+   */
+  unreadByScope: Map<string, Promise<number>>;
 }
 
 @Injectable()
 export class SseService {
   private readonly logger = new Logger(SseService.name);
   private readonly stream$ = new Subject<StreamEnvelope>();
-  /** stream แยกจาก stream$ เพราะ scope เป็นราย serial+channel ไม่ใช่ ward-scoped channel ทั่วไป */
+  /** stream แยกจาก stream$ เพราะ scope เป็นราย serial+channel ไม่ใช่ channel ทั่วไปที่กรองตาม scope ผู้ใช้ */
   private readonly realtime$ = new Subject<RealtimeReading>();
+  private unreadCounter: UnreadCounter | null = null;
 
   constructor(
     private readonly metrics: MetricsService,
@@ -41,8 +50,16 @@ export class SseService {
   ) {}
 
   /** broadcast ข้อมูลเข้า stream กลาง — ใช้ได้ทั้งจาก event handler และ service อื่นโดยตรง */
-  broadcast(channel: SseChannel, data: unknown, ward: string | null = null): void {
-    this.stream$.next({ channel, data, ward });
+  broadcast(
+    channel: SseChannel,
+    data: unknown,
+    location: DeviceLocation = { tenantId: null, departmentId: null },
+  ): void {
+    this.stream$.next({ channel, data, location, unreadByScope: new Map() });
+  }
+
+  registerUnreadCounter(counter: UnreadCounter): void {
+    this.unreadCounter = counter;
   }
 
   /** Observable ของ MessageEvent สำหรับ endpoint @Sse() เฉพาะ channel ที่ระบุ */
@@ -71,17 +88,15 @@ export class SseService {
     metricLabel: string,
     user: JwtPayloadDto,
   ): Observable<MessageEvent> {
-    const wardScoped = isWardScoped(user);
-
     // defer + finalize เพื่อนับ connection ตอน client subscribe/disconnect จริง
     return defer(() => {
       this.metrics.sseConnectionOpened(metricLabel);
       return this.stream$.asObservable();
     }).pipe(
       filter((envelope) => channels.includes(envelope.channel)),
-      // ward ที่ resolve ไม่ได้ (null) ถือว่าไม่ผ่าน scope — ปลอดภัยกว่าปล่อยรั่ว
-      filter((envelope) => !wardScoped || envelope.ward === user.wardId),
-      map((envelope): MessageEvent => ({ data: envelope.data as object, type: envelope.channel })),
+      filter((envelope) => canAccess(user.scope, envelope.location)),
+      concatMap((envelope) => this.withUserUnreadCount(envelope, user)),
+      map((event): MessageEvent => ({ data: event.payload, type: event.type })),
       finalize(() => this.metrics.sseConnectionClosed(metricLabel)),
     );
   }
@@ -100,9 +115,9 @@ export class SseService {
     channel: string,
     user: JwtPayloadDto,
   ): Promise<Observable<MessageEvent>> {
-    if (isWardScoped(user)) {
-      const ward = await this.wardOf(serial);
-      if (ward !== user.wardId) {
+    if (user.scope.kind !== 'GLOBAL') {
+      const location = await this.locationOf(serial);
+      if (!canAccess(user.scope, location)) {
         throw new ForbiddenException(`ไม่มีสิทธิ์ดู realtime ของอุปกรณ์ ${serial}`);
       }
     }
@@ -136,23 +151,60 @@ export class SseService {
   }
 
   /**
-   * หา ward ของ event ที่มีแค่ serial (telemetry/notification) — อ่านผ่าน cache ของ
+   * unreadCount ที่แนบมากับ event นับแค่ department ที่เกิด event แต่ผู้รับเห็นได้ทั้ง tenant หรือหลาย
+   * department จึงนับใหม่ตาม scope ของผู้รับ — GLOBAL ใช้ค่าที่แนบมาเหมือนเดิม
+   * นับไม่สำเร็จก็ส่ง event ต่อด้วยค่าเดิม ไม่ทิ้ง event ทั้งก้อน
+   */
+  private withUserUnreadCount(
+    envelope: StreamEnvelope,
+    user: JwtPayloadDto,
+  ): Observable<{ type: SseChannel; payload: object }> {
+    const data = envelope.data as Record<string, unknown>;
+    const plain = { type: envelope.channel, payload: data };
+    if (
+      envelope.channel !== 'notification' ||
+      !this.unreadCounter ||
+      user.scope.kind === 'GLOBAL' ||
+      typeof data?.unreadCount !== 'number'
+    ) {
+      return of(plain);
+    }
+    const key = scopeKey(user.scope);
+    let count = envelope.unreadByScope.get(key);
+    if (!count) {
+      count = this.unreadCounter(user);
+      envelope.unreadByScope.set(key, count);
+    }
+    return from(
+      count.then(
+        (unreadCount) => ({ type: envelope.channel, payload: { ...data, unreadCount } }),
+        (err: Error) => {
+          this.logger.warn(`นับ unread ตาม scope ผู้ใช้ล้มเหลว: ${err.message}`);
+          return plain;
+        },
+      ),
+    );
+  }
+
+  /**
+   * หา tenant/department ของ event ที่มีแค่ serial (telemetry/notification) — อ่านผ่าน cache ของ
    * DeviceAssignmentService จึงเป็น Redis hit เกือบทุกครั้ง ไม่ใช่ query ต่อ event
    */
-  private async wardOf(serial: unknown): Promise<string | null> {
-    if (typeof serial !== 'string') return null;
+  private async locationOf(serial: unknown): Promise<DeviceLocation> {
+    const unknown: DeviceLocation = { tenantId: null, departmentId: null };
+    if (typeof serial !== 'string') return unknown;
     try {
-      return await this.assignments.resolveWard(serial);
+      return await this.assignments.resolveLocation(serial);
     } catch (err) {
-      this.logger.warn(`resolve ward ของ ${serial} ล้มเหลว: ${(err as Error).message}`);
-      return null;
+      this.logger.warn(`resolve location ของ ${serial} ล้มเหลว: ${(err as Error).message}`);
+      return unknown;
     }
   }
 
   @OnEvent(AppEvents.TELEMETRY_CREATED)
   async handleTelemetryCreated(payload: unknown): Promise<void> {
-    const ward = await this.wardOf((payload as { serial?: unknown })?.serial);
-    this.broadcast('telemetry', payload, ward);
+    const location = await this.locationOf((payload as { serial?: unknown })?.serial);
+    this.broadcast('telemetry', payload, location);
   }
 
   @OnEvent(AppEvents.TELEMETRY_REALTIME)
@@ -162,7 +214,10 @@ export class SseService {
 
   @OnEvent(AppEvents.DEVICE_CHANGED)
   handleDeviceChanged(payload: DeviceChangedEvent): void {
-    // event นี้พก device ทั้งก้อนมาอยู่แล้ว ไม่ต้อง resolve ward ซ้ำ
-    this.broadcast('device', payload, payload.device?.ward ?? null);
+    // event นี้พก device ทั้งก้อนมาอยู่แล้ว ไม่ต้อง resolve location ซ้ำ
+    this.broadcast('device', payload, {
+      tenantId: payload.device?.tenantId ?? null,
+      departmentId: payload.device?.departmentId ?? null,
+    });
   }
 }

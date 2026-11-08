@@ -10,29 +10,40 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
+import { DeviceAssignmentService } from '../device/device-assignment.service';
 
-// หมายเหตุ: GET route ไม่ guard เพื่อคงพฤติกรรมเดิมเหมือน device.controller.ts
-// ส่วน create/update/delete guard ด้วย JwtAuthGuard + RolesGuard (SUPER/SERVICE/ADMIN)
-// เหมือน device-repair เพราะกระทบ network setting ของอุปกรณ์โดยตรง
+// ทุก route ต้อง login และตรวจว่าจุดติดตั้งอยู่ใน scope (tenant/department) ของผู้ใช้ — ตรวจที่ controller
+// เพราะ DeviceConfigService ถูกใช้ซ้ำจาก /adjust ที่ตั้งใจไม่ login
+// create/update/delete จำกัด role เพิ่ม (SUPER/SERVICE/ADMIN) เพราะกระทบ network setting ของอุปกรณ์โดยตรง
 @ApiTags('device-config')
 @Controller('devices/:deviceId/config')
 export class DeviceConfigController {
-  constructor(private readonly configService: DeviceConfigService) {}
+  constructor(
+    private readonly configService: DeviceConfigService,
+    private readonly assignments: DeviceAssignmentService,
+  ) {}
 
   @Post()
   @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER, Role.SERVICE, Role.ADMIN)
-  create(
+  async create(
     @Param('deviceId') deviceId: string,
     @Body() dto: CreateDeviceConfigDto,
     @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<Configs> {
+    await this.assignments.assertDeviceAccess(req.user.scope, deviceId);
     return this.configService.create(deviceId, dto, req.user);
   }
 
   @Get()
-  findByDevice(@Param('deviceId') deviceId: string): Promise<Configs> {
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
+  async findByDevice(
+    @Param('deviceId') deviceId: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ): Promise<Configs> {
+    await this.assignments.assertDeviceAccess(req.user.scope, deviceId);
     return this.configService.findByDevice(deviceId);
   }
 
@@ -40,11 +51,12 @@ export class DeviceConfigController {
   @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER, Role.SERVICE, Role.ADMIN)
-  update(
+  async update(
     @Param('deviceId') deviceId: string,
     @Body() dto: UpdateDeviceConfigDto,
     @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<Configs> {
+    await this.assignments.assertDeviceAccess(req.user.scope, deviceId);
     return this.configService.update(deviceId, dto, req.user);
   }
 
@@ -52,10 +64,11 @@ export class DeviceConfigController {
   @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER, Role.SERVICE, Role.ADMIN)
-  remove(
+  async remove(
     @Param('deviceId') deviceId: string,
     @Req() req: Request & { user: JwtPayloadDto },
   ): Promise<Configs> {
+    await this.assignments.assertDeviceAccess(req.user.scope, deviceId);
     return this.configService.remove(deviceId, req.user);
   }
 }

@@ -23,7 +23,7 @@ describe('GrpcPartnerRateLimitGuard', () => {
   it('allows the call when under the limit', async () => {
     redis.incrementWithExpiry.mockResolvedValue(1);
     const context = makeContext({
-      __partnerApiKey: { id: 'key-1', name: 'Acme', wards: new Set() },
+      __partnerApiKey: { id: 'key-1', name: 'Acme', tenants: new Set() },
     });
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
@@ -32,7 +32,7 @@ describe('GrpcPartnerRateLimitGuard', () => {
   it('throws RESOURCE_EXHAUSTED once the per-minute limit is exceeded', async () => {
     redis.incrementWithExpiry.mockResolvedValue(61);
     const context = makeContext({
-      __partnerApiKey: { id: 'key-1', name: 'Acme', wards: new Set() },
+      __partnerApiKey: { id: 'key-1', name: 'Acme', tenants: new Set() },
     });
 
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(RpcException);
@@ -46,7 +46,7 @@ describe('GrpcPartnerRateLimitGuard', () => {
   it('tracks the counter per key id', async () => {
     redis.incrementWithExpiry.mockResolvedValue(1);
     const context = makeContext({
-      __partnerApiKey: { id: 'key-42', name: 'Acme', wards: new Set() },
+      __partnerApiKey: { id: 'key-42', name: 'Acme', tenants: new Set() },
     });
 
     await guard.canActivate(context);

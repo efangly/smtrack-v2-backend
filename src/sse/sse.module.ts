@@ -4,7 +4,7 @@ import { SseController } from './sse.controller';
 import { DeviceModule } from '../device/device.module';
 
 @Module({
-  // ต้องใช้ DeviceAssignmentService หา ward ของ serial เพื่อกรอง stream ตาม ward ของผู้ใช้
+  // ต้องใช้ DeviceAssignmentService หา department ของ serial เพื่อกรอง stream ตาม department ของผู้ใช้
   imports: [DeviceModule],
   controllers: [SseController],
   providers: [SseService],

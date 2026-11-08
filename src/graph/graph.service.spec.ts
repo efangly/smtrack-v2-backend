@@ -4,6 +4,8 @@ import { GraphService, UNASSIGNED_CHANNEL } from './graph.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { TimeRange as GraphRange } from '../common/time/range.util';
+import { RestoredWindowService } from '../backup/restored-window.service';
+import { RestoreInProgressException } from '../common/exceptions/restore-in-progress.exception';
 
 /** probe แบบย่อ — ทดสอบสนใจแค่ field ที่ถูกยกไปใส่ series */
 const probe = (id: string, channel: string, name: string | null = `P${channel}`) => ({
@@ -20,14 +22,21 @@ const log = (id: string, probeId: string | null, temp = 5) => ({ id, probeId, te
 
 describe('GraphService', () => {
   let service: GraphService;
-  let prisma: { logDays: { findMany: jest.Mock }; probes: { findMany: jest.Mock } };
+  let prisma: {
+    logDays: { findMany: jest.Mock };
+    logDayArchive: { findMany: jest.Mock };
+    probes: { findMany: jest.Mock };
+  };
+  let restored: { ensureRange: jest.Mock };
   let redis: { getOrSet: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
       logDays: { findMany: jest.fn().mockResolvedValue([]) },
+      logDayArchive: { findMany: jest.fn().mockResolvedValue([]) },
       probes: { findMany: jest.fn().mockResolvedValue([]) },
     };
+    restored = { ensureRange: jest.fn().mockResolvedValue(undefined) };
     // cache-aside: เรียก factory ตรงเพื่อทดสอบ query จริงโดยไม่ผ่าน redis จริง
     redis = {
       getOrSet: jest.fn((_key: string, _ttl: number, factory: () => unknown) => factory()),
@@ -38,6 +47,7 @@ describe('GraphService', () => {
         GraphService,
         { provide: PrismaService, useValue: prisma },
         { provide: RedisService, useValue: redis },
+        { provide: RestoredWindowService, useValue: restored },
       ],
     }).compile();
 
@@ -190,6 +200,61 @@ describe('GraphService', () => {
       const [keyOne] = redis.getOrSet.mock.calls[1];
       expect(keyAll).toMatch(/:all$/);
       expect(keyOne).toMatch(/:p2$/);
+    });
+  });
+
+  describe('ข้อมูลนอก hot window (on-demand restore)', () => {
+    const OLD = {
+      range: GraphRange.CUSTOM,
+      from: '2020-01-01T00:00:00.000Z',
+      to: '2020-01-10T00:00:00.000Z',
+    };
+
+    it('range ปกติ (1d/7d/30d): ขอ ensureRange แต่ไม่อ่านตาราง archive', async () => {
+      await service.series('dev-1', { range: GraphRange.MONTH });
+      expect(restored.ensureRange).toHaveBeenCalledWith(
+        'dev-1',
+        expect.any(Date),
+        expect.any(Date),
+      );
+      expect(prisma.logDayArchive.findMany).not.toHaveBeenCalled();
+    });
+
+    it('ย้อนเกิน hot window: restore ก่อน แล้วอ่าน log_day_archive ด้วย where เดียวกัน', async () => {
+      await service.series('dev-1', { ...OLD, probeId: 'p1' });
+
+      expect(restored.ensureRange).toHaveBeenCalledWith(
+        'dev-1',
+        new Date(OLD.from),
+        new Date(OLD.to),
+      );
+      expect(prisma.logDayArchive.findMany.mock.calls[0][0].where).toEqual({
+        deviceId: 'dev-1',
+        sendTime: { gte: new Date(OLD.from), lte: new Date(OLD.to) },
+        probeId: 'p1',
+      });
+    });
+
+    it('รวมข้อมูลจาก archive กับ log_days เป็น series เดียวเรียงตามเวลา', async () => {
+      const at = (id: string, iso: string) => ({ id, probeId: 'p1', sendTime: new Date(iso) });
+      prisma.probes.findMany.mockResolvedValue([probe('p1', '1')]);
+      prisma.logDayArchive.findMany.mockResolvedValue([
+        at('a1', '2020-01-01T00:00:00Z'),
+        at('a2', '2020-01-02T00:00:00Z'),
+      ]);
+      prisma.logDays.findMany.mockResolvedValue([at('h1', '2020-01-09T00:00:00Z')]);
+
+      const series = await service.series('dev-1', OLD);
+
+      expect(series[0].points.map((p) => p.id)).toEqual(['a1', 'a2', 'h1']);
+    });
+
+    it('restore ยังไม่เสร็จ (202): ส่งต่อ exception และไม่ query ข้อมูลเลย', async () => {
+      restored.ensureRange.mockRejectedValue(new RestoreInProgressException(5));
+
+      await expect(service.series('dev-1', OLD)).rejects.toBeInstanceOf(RestoreInProgressException);
+      expect(prisma.logDays.findMany).not.toHaveBeenCalled();
+      expect(prisma.logDayArchive.findMany).not.toHaveBeenCalled();
     });
   });
 });

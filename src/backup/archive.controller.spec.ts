@@ -1,4 +1,9 @@
+import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { ArchiveController } from './archive.controller';
+import { JwtAuthGuard } from '../common/guards/jwt.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { ROLES_KEY } from '../common/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
 import { ArchiveExportService } from './archive-export.service';
 import { ArchiveRestoreService } from './archive-restore.service';
 
@@ -38,5 +43,18 @@ describe('ArchiveController', () => {
   it('removeMonth ส่งต่อ month ไปยัง restorer.removeMonth', async () => {
     await expect(controller.removeMonth('2026-01')).resolves.toBe('remove-result');
     expect(restorer.removeMonth).toHaveBeenCalledWith('2026-01');
+  });
+
+  describe('การเข้าถึง', () => {
+    it('ทั้ง controller ต้องผ่าน JwtAuthGuard และ RolesGuard', () => {
+      expect(Reflect.getMetadata(GUARDS_METADATA, ArchiveController)).toEqual([
+        JwtAuthGuard,
+        RolesGuard,
+      ]);
+    });
+
+    it('จำกัดเฉพาะ SUPER และ SERVICE', () => {
+      expect(Reflect.getMetadata(ROLES_KEY, ArchiveController)).toEqual([Role.SUPER, Role.SERVICE]);
+    });
   });
 });

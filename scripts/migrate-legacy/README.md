@@ -4,6 +4,11 @@ One-shot script that copies device metadata from the legacy
 [smtrack-device](https://github.com/efangly/smtrack-device) database into this project's
 schema. Run it once against an empty/fresh target database.
 
+> **Superseded for the parallel-run period.** Continuous legacy sync ([ADR-0007](../../docs/adr/0007-legacy-sync-one-way-via-rabbitmq-snapshots.md))
+> backfills metadata with `node dist/cli/legacy-backfill` instead, which replays every legacy row through the
+> same code as the live consumer, sets `tenantId` from `hospital`, and can be re-run safely.
+> Use this script only for a one-off copy without sync. The full sequence is in `docs/legacy-sync-contract.md` §5.
+
 ## What gets migrated
 
 | Legacy table | New table(s) |
@@ -29,13 +34,25 @@ Every migrated device gets exactly one `DeviceAssignments` row: `startedAt` = th
 
 ## What is explicitly NOT migrated
 
-- **`hospital`, `hospitalName`, `wardName`** on legacy `Devices` — the new schema only keeps a
-  single `ward` ID field, with no place for the hospital/ward display names. These are dropped
-  on purpose (confirmed decision) rather than stuffed into `remark`.
+- **`hospitalName`, `wardName`** on legacy `Devices` — display names have no place in the new
+  schema and are dropped on purpose rather than stuffed into `remark`.
+- **`hospital`** is *not* migrated by this script, but it is the auth-service tenant ID, so
+  legacy sync (`legacy-backfill` / the consumer) maps it straight to `tenantId` (ADR-0004 note,
+  ADR-0007). After running this script instead, fill `tenantId` with `npm run backfill:tenant`.
 - **`LogDays`** (historical time-series telemetry) — out of scope for this script, since it can
   be a very large table and the two `LogDays` schemas are structurally close enough to move
   with a plain SQL copy instead of an app-level script. If you need it:
-  1. On the legacy DB, dump just that table: `pg_dump --table='"LogDays"' --data-only <legacy_db> > logdays.sql`
+  1. `log_days` is unique on `(serial, probe, send_time)` (migration
+     `20261108000000_log_days_idempotent_ingest`), so a plain `COPY` into it aborts on the first
+     row that legacy sync already delivered. Load into a staging table and insert with
+     `ON CONFLICT DO NOTHING` instead:
+     ```sql
+     CREATE TEMP TABLE logdays_stage (LIKE log_days INCLUDING DEFAULTS);
+     -- \copy logdays_stage (...) FROM 'logdays.csv' WITH (FORMAT csv, HEADER)
+     INSERT INTO log_days SELECT * FROM logdays_stage ON CONFLICT DO NOTHING;
+     ```
+     Export from the legacy DB with `\copy (SELECT ... FROM "LogDays") TO 'logdays.csv' CSV HEADER`,
+     selecting columns in the target order (step 2 explains the extra `device_id` column).
   2. The target's `log_days` table adds one nullable column vs. the legacy one: `device_id`
      (the installation point at ingest time — see schema comment). After loading the raw rows
      into `log_days`, backfill it per serial from the `Devices.serial` pointer:

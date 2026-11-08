@@ -54,7 +54,7 @@ describe('Devices (e2e)', () => {
       // ยืนยันว่าเข้า DB จริง ไม่ใช่แค่ echo กลับมา
       const inDb = await prisma.devices.findUnique({ where: { serial: dto.serial } });
       expect(inDb).not.toBeNull();
-      expect(inDb!.ward).toBe(dto.ward);
+      expect(inDb!.departmentId).toBe(dto.departmentId);
 
       // สร้าง device ต้องพ่วง Configs และ Probes default มาด้วยเสมอ
       const config = await prisma.configs.findUnique({ where: { deviceId: device.id } });
@@ -88,7 +88,7 @@ describe('Devices (e2e)', () => {
       // HttpExceptionFilter ดึง `message` ออกจาก exception.getResponse() มาใส่ body.message ตรง ๆ
       // ของ ValidationPipe จึงเป็น array ของข้อความ error รายฟิลด์
       const details: string[] = res.body.message;
-      expect(details.join(' ')).toMatch(/ward/);
+      expect(details.join(' ')).toMatch(/departmentId/);
       expect(details.join(' ')).toMatch(/staticName/);
       expect(details.join(' ')).toMatch(/firmware/);
     });
@@ -153,7 +153,9 @@ describe('Devices (e2e)', () => {
 
   describe('GET /devices', () => {
     it('คืนรายการที่มี device ที่เพิ่งสร้าง (ไม่เช็ค count รวม เพราะ DB ใช้ร่วมกัน)', async () => {
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/devices`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(200);
       const devices = unwrap(res.body);
@@ -162,49 +164,79 @@ describe('Devices (e2e)', () => {
       const ours = devices.filter((d: { serial: string }) => d.serial.startsWith(E2E_PREFIX));
       expect(ours.length).toBeGreaterThanOrEqual(2);
     });
+
+    it('ไม่แนบ token ถูกปฏิเสธ 401 (ไม่เปิด public แล้ว เพราะจะเห็นข้ามทุก tenant)', async () => {
+      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/devices`);
+
+      expect(res.status).toBe(401);
+    });
+
+    it('ADMIN ของ tenant อื่นไม่เห็นอุปกรณ์ของ tenant นี้', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices`)
+        .query({ limit: 100, search: E2E_PREFIX })
+        .set('Authorization', bearerUser({ role: 'ADMIN', tenantId: `${E2E_PREFIX}OTHER` }));
+
+      expect(res.status).toBe(200);
+      expect(unwrap(res.body)).toHaveLength(0);
+    });
+
+    it('USER ที่ได้บาง department เห็นเฉพาะ department นั้นใน tenant ตัวเอง', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices`)
+        .query({ limit: 100, search: E2E_PREFIX })
+        .set('Authorization', bearerUser({ role: 'USER', departmentIds: ['ICU'] }));
+
+      expect(res.status).toBe(200);
+      const departments = new Set(
+        unwrap(res.body).map((d: { departmentId: string }) => d.departmentId),
+      );
+      expect([...departments]).toEqual(['ICU']);
+    });
   });
 
-  describe('GET /devices?ward=', () => {
-    it('meta.total ต้องนับเฉพาะ device ที่ตรง ward filter ไม่ใช่ count ทั้งตาราง', async () => {
-      // ใช้ ward ที่ผูกกับ E2E_PREFIX เฉพาะรอบนี้ เพื่อไม่ชนกับ device ward อื่นบน shared DB
-      const wardA = `${E2E_PREFIX}WARD-A`;
-      const wardB = `${E2E_PREFIX}WARD-B`;
+  describe('GET /devices?departmentId=', () => {
+    it('meta.total ต้องนับเฉพาะ device ที่ตรง department filter ไม่ใช่ count ทั้งตาราง', async () => {
+      // ใช้ department ที่ผูกกับ E2E_PREFIX เฉพาะรอบนี้ เพื่อไม่ชนกับ device department อื่นบน shared DB
+      const deptA = `${E2E_PREFIX}DEPT-A`;
+      const deptB = `${E2E_PREFIX}DEPT-B`;
       const seeds = [
         {
           ...buildDevices(E2E_PREFIX)[0],
           serial: serialFor(E2E_PREFIX, 50),
-          staticName: `${E2E_PREFIX}Ward A 1`,
+          staticName: `${E2E_PREFIX}Dept A 1`,
           seq: 50,
-          ward: wardA,
+          departmentId: deptA,
         },
         {
           ...buildDevices(E2E_PREFIX)[0],
           serial: serialFor(E2E_PREFIX, 51),
-          staticName: `${E2E_PREFIX}Ward A 2`,
+          staticName: `${E2E_PREFIX}Dept A 2`,
           seq: 51,
-          ward: wardA,
+          departmentId: deptA,
         },
         {
           ...buildDevices(E2E_PREFIX)[0],
           serial: serialFor(E2E_PREFIX, 52),
-          staticName: `${E2E_PREFIX}Ward B 1`,
+          staticName: `${E2E_PREFIX}Dept B 1`,
           seq: 52,
-          ward: wardB,
+          departmentId: deptB,
         },
       ];
       for (const seed of seeds) await seedDevice(prisma, seed);
 
       const res = await request(app.getHttpServer())
         .get(`${API_PREFIX}/devices`)
-        .query({ ward: wardA, limit: 1 });
+        .set('Authorization', bearerUser())
+        .query({ departmentId: deptA, limit: 1 });
 
       expect(res.status).toBe(200);
-      // ก่อนแก้บั๊ก: count ไม่กรอง ward เลยได้จำนวน device ทั้งตาราง (shared DB) ไม่ใช่ 2
+      // ก่อนแก้บั๊ก: count ไม่กรอง department เลยได้จำนวน device ทั้งตาราง (shared DB) ไม่ใช่ 2
       expect(res.body.meta.total).toBe(2);
       expect(res.body.meta.totalPages).toBe(2);
       expect(unwrap(res.body)).toHaveLength(1);
-      for (const device of unwrap(res.body) as { ward: string }[]) {
-        expect(device.ward).toBe(wardA);
+      for (const device of unwrap(res.body) as { departmentId: string }[]) {
+        expect(device.departmentId).toBe(deptA);
       }
     });
   });
@@ -213,16 +245,39 @@ describe('Devices (e2e)', () => {
     it('คืน device ที่ตรงกับ serial', async () => {
       const serial = serialFor(E2E_PREFIX, 1);
 
-      const res = await request(app.getHttpServer()).get(`${API_PREFIX}/devices/${serial}`);
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/${serial}`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(200);
       expect(unwrap(res.body).serial).toBe(serial);
     });
 
+    it('ADMIN ของ tenant อื่นได้ 404 เหมือนไม่มีอุปกรณ์นั้น', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/${serialFor(E2E_PREFIX, 1)}`)
+        .set('Authorization', bearerUser({ role: 'ADMIN', tenantId: `${E2E_PREFIX}OTHER` }));
+
+      expect(res.status).toBe(404);
+    });
+
+    it('สร้างอุปกรณ์ใน tenant อื่นไม่ได้ (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`${API_PREFIX}/devices`)
+        .set('Authorization', bearerUser({ role: 'ADMIN', tenantId: `${E2E_PREFIX}OTHER` }))
+        .send({
+          ...buildDevices(E2E_PREFIX)[0],
+          serial: serialFor(E2E_PREFIX, 95),
+          staticName: `${E2E_PREFIX}Forbidden`,
+        });
+
+      expect(res.status).toBe(403);
+    });
+
     it('คืน 404 เมื่อไม่มี serial นั้น', async () => {
-      const res = await request(app.getHttpServer()).get(
-        `${API_PREFIX}/devices/${E2E_PREFIX}ไม่มีจริง`,
-      );
+      const res = await request(app.getHttpServer())
+        .get(`${API_PREFIX}/devices/${E2E_PREFIX}ไม่มีจริง`)
+        .set('Authorization', bearerUser());
 
       expect(res.status).toBe(404);
     });

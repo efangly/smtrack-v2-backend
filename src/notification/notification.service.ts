@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { Notifications, Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -10,6 +10,7 @@ import { UpdateNotificationDto } from './dto/update-notification.dto';
 import { TraceService } from '../observability/trace.service';
 import { MetricsService } from '../observability/metrics.service';
 import { JwtPayloadDto } from '../common/dto/payload.dto';
+import { DeviceLocation, canAccess, deviceWhere, scopeKey } from '../common/auth/access-scope';
 import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { NotificationQueryDto } from './dto/query-notification.dto';
@@ -19,7 +20,8 @@ import { classifyNotification } from './notification-classifier.util';
 import { resolveRange, TimeRange } from '../common/time/range.util';
 import { FCM_PUSH_PATTERN } from '../config/rabbitmq.config';
 
-const bySerialKey = (serial: string) => `notification:${serial}`;
+/** แยกตาม scope เพราะผลกรองตาม tenant/department ของผู้ขอ — ล้างทั้งชุดด้วย pattern `notification:serial:<serial>:*` */
+const bySerialKey = (serial: string, scope: string) => `notification:serial:${serial}:${scope}`;
 
 export interface NotificationDashboardCount {
   temp: number;
@@ -30,7 +32,7 @@ export interface NotificationDashboardCount {
 }
 
 @Injectable()
-export class NotificationService {
+export class NotificationService implements OnModuleInit {
   private readonly logger = new Logger(NotificationService.name);
 
   constructor(
@@ -44,6 +46,11 @@ export class NotificationService {
     private readonly assignments: DeviceAssignmentService,
     private readonly probes: ProbeResolverService,
   ) {}
+
+  /** ให้ SseService นับ unreadCount ตาม scope ของผู้รับแต่ละคน (scope เดียวกับ findUnreadCount) */
+  onModuleInit(): void {
+    this.sseService.registerUnreadCounter((user) => this.findUnreadCount(user));
+  }
 
   /**
    * สร้างการแจ้งเตือน แล้ว fan-out ผ่าน MQTT + SSE + FCM
@@ -74,7 +81,7 @@ export class NotificationService {
         severity,
       },
     });
-    await this.redis.del(bySerialKey(dto.serial));
+    await this.redis.delByPattern(`notification:serial:${dto.serial}:*`);
 
     // publish ผ่าน MQTT topic notification/{deviceId} (log/notify เดินผ่าน MQTT เท่านั้น)
     // deviceId เป็น null ได้ถ้ากล่องยังไม่ถูกติดตั้งที่ไหน — ไม่มี deviceId ก็ build topic ไม่ได้ ข้ามไป
@@ -118,12 +125,12 @@ export class NotificationService {
       { 'device.serial': notification.serial },
       async () => {
         try {
-          // ส่ง ward ไปด้วยเพื่อให้ SseService กรองให้ client ที่ถูก scope ตาม ward ได้
-          const ward = await this.assignments.resolveWard(notification.serial);
-          // แนบ unreadCount (ของ ward นี้) ไปด้วย เป็น field เพิ่มเติมบน payload เดิม
+          // ส่ง tenant/department ไปด้วยเพื่อให้ SseService กรองตาม scope ของ client ได้
+          const location = await this.assignments.resolveLocation(notification.serial);
+          // แนบ unreadCount (ของ department นี้ — SseService นับใหม่ตาม scope ของผู้รับ) ไปด้วย เป็น field เพิ่มเติมบน payload เดิม
           // (ไม่ทำลาย consumer เดิมที่อ่านแค่ field ของ Notifications ตรง ๆ) เพื่อให้ dashboard
           // อัปเดตตัวเลขแจ้งเตือนใหม่แบบ real-time โดยไม่ต้องยิง fetch แยก
-          const unreadCount = await this.countUnread(ward);
+          const unreadCount = await this.countUnread(location);
           // แนบชื่อ device (Devices.name) ไปด้วยเพื่อให้ frontend แสดงตอนมีการแจ้งเตือนได้ทันที
           const device = await this.prisma.devices.findUnique({
             where: { serial: notification.serial },
@@ -132,7 +139,7 @@ export class NotificationService {
           this.sseService.broadcast(
             'notification',
             { ...notification, deviceName: device?.name ?? null, unreadCount },
-            ward,
+            location,
           );
           this.metrics.recordNotificationDelivery('sse', 'success');
           return true;
@@ -177,17 +184,19 @@ export class NotificationService {
     );
   }
 
-  findBySerial(serial: string): Promise<Notifications[]> {
-    return this.redis.getOrSet(bySerialKey(serial), 20, () =>
+  /** กล่องย้ายข้าม tenant ได้ จึงกรองรายแถวตามจุดติดตั้งที่ประทับไว้ ไม่ใช่ตามที่กล่องอยู่ตอนนี้ */
+  findBySerial(serial: string, user: JwtPayloadDto): Promise<Notifications[]> {
+    const { conditions } = this.findCondition(user);
+    return this.redis.getOrSet(bySerialKey(serial, scopeKey(user.scope)), 20, () =>
       this.prisma.notifications.findMany({
-        where: { serial },
+        where: { ...conditions, serial },
         orderBy: { createAt: 'desc' },
         take: 100,
       }),
     );
   }
 
-  /** paginated/filtered list — role scoping ตาม ward เท่านั้น (hospital ตัดออกแล้วใน v2 schema) */
+  /** paginated/filtered list — กรองตาม scope (tenant/department) ของผู้ใช้ */
   async findAll(
     query: NotificationQueryDto,
     user: JwtPayloadDto,
@@ -279,31 +288,51 @@ export class NotificationService {
     });
   }
 
-  /** unread count แบบ persistent (ต่างจาก findCount ที่นับตาม type/message) — ward-scoped เหมือนกัน */
+  /** unread count แบบ persistent (ต่างจาก findCount ที่นับตาม type/message) — กรองตาม scope เหมือนกัน */
   findUnreadCount(user: JwtPayloadDto): Promise<number> {
     const { conditions } = this.findCondition(user);
     return this.prisma.notifications.count({ where: { ...conditions, isRead: false } });
   }
 
-  /** นับ unread ของ ward เดียว ใช้ตอน broadcast unreadCount สด ๆ ผ่าน SSE (ward=null = นับรวมทุก ward) */
-  private countUnread(ward: string | null): Promise<number> {
+  /**
+   * นับ unread ของจุดที่เกิด event ใช้ตอน broadcast unreadCount สด ๆ ผ่าน SSE — ค่านี้ถึงมือเฉพาะ GLOBAL
+   * (ผู้รับคนอื่นได้ค่าที่นับใหม่ตาม scope ตัวเองใน SseService) จึงไม่รู้ตำแหน่ง = นับทั้งหมด
+   */
+  private countUnread(location: DeviceLocation): Promise<number> {
+    if (location.tenantId === null && location.departmentId === null) {
+      return this.prisma.notifications.count({ where: { isRead: false } });
+    }
     return this.prisma.notifications.count({
-      where: ward ? { isRead: false, device: { ward } } : { isRead: false },
+      where: {
+        isRead: false,
+        device: {
+          tenantId: location.tenantId,
+          ...(location.departmentId !== null ? { departmentId: location.departmentId } : {}),
+        },
+      },
     });
   }
 
-  async markRead(id: string): Promise<Notifications> {
+  async markRead(id: string, user: JwtPayloadDto): Promise<Notifications> {
+    // ตำแหน่งของการแจ้งเตือน = จุดติดตั้งที่ประทับไว้ตอนเกิด — นอก scope ตอบ 404 เหมือนไม่มีอยู่จริง
+    const existing = await this.prisma.notifications.findUnique({
+      where: { id },
+      select: { device: { select: { tenantId: true, departmentId: true } } },
+    });
+    const location: DeviceLocation = existing?.device ?? { tenantId: null, departmentId: null };
+    if (!existing || !canAccess(user.scope, location)) {
+      throw new NotFoundException(`Notification ${id} not found`);
+    }
     const notification = await this.prisma.notifications.update({
       where: { id },
       data: { isRead: true, readAt: new Date() },
     });
     try {
-      const ward = await this.assignments.resolveWard(notification.serial);
-      const unreadCount = await this.countUnread(ward);
+      const unreadCount = await this.countUnread(location);
       this.sseService.broadcast(
         'notification',
         { action: 'read', notificationId: id, unreadCount },
-        ward,
+        location,
       );
     } catch (err) {
       this.logger.warn(`broadcast notification.read ล้มเหลว: ${this.msg(err)}`);
@@ -318,9 +347,10 @@ export class NotificationService {
       data: { isRead: true, readAt: new Date() },
     });
     try {
-      const ward = user.wardId ?? null;
       const unreadCount = await this.findUnreadCount(user);
-      this.sseService.broadcast('notification', { action: 'read-all', unreadCount }, ward);
+      for (const location of await this.locationsIn(user)) {
+        this.sseService.broadcast('notification', { action: 'read-all', unreadCount }, location);
+      }
     } catch (err) {
       this.logger.warn(`broadcast notification.read-all ล้มเหลว: ${this.msg(err)}`);
     }
@@ -336,23 +366,33 @@ export class NotificationService {
   }
 
   /**
-   * role-based scoping — เดิม (legacy) มี branch ตาม hospital ด้วย แต่ v2 ตัด field hospital
-   * ออกจาก schema แล้ว (migration remove_hospital_and_notification_tokens) จึง scope ได้แค่ ward
+   * "อ่านทั้งหมด" กระทบทุก department ที่ผู้ใช้เห็น — SSE กรองทีละตำแหน่ง จึงส่งหนึ่ง event ต่อ department
+   * ให้ client ของแต่ละ department ได้รับ (GLOBAL ส่งครั้งเดียวแบบไม่ระบุตำแหน่ง ซึ่งเห็นได้เฉพาะ GLOBAL)
    */
+  private async locationsIn(user: JwtPayloadDto): Promise<DeviceLocation[]> {
+    const scope = user.scope;
+    if (scope.kind === 'GLOBAL') return [{ tenantId: null, departmentId: null }];
+    if (scope.departments !== 'ALL') {
+      return scope.departments.map((departmentId) => ({ tenantId: scope.tenantId, departmentId }));
+    }
+    const rows = await this.prisma.devices.findMany({
+      where: { tenantId: scope.tenantId },
+      distinct: ['departmentId'],
+      select: { departmentId: true },
+    });
+    return rows.map(({ departmentId }) => ({ tenantId: scope.tenantId, departmentId }));
+  }
+
+  /** กรองตาม scope ของผู้ใช้ — การแจ้งเตือนที่ไม่ผูกจุดติดตั้ง (deviceId null) เห็นได้เฉพาะ GLOBAL */
   private findCondition(user: JwtPayloadDto): {
     conditions: Prisma.NotificationsWhereInput | undefined;
     key: string;
   } {
-    switch (user.role) {
-      case 'USER':
-      case 'LEGACY_USER':
-        return {
-          conditions: { device: { ward: user.wardId } },
-          key: `notification:${user.wardId}`,
-        };
-      default:
-        return { conditions: undefined, key: 'notification' };
-    }
+    if (user.scope.kind === 'GLOBAL') return { conditions: undefined, key: 'notification' };
+    return {
+      conditions: { device: deviceWhere(user.scope) },
+      key: `notification:${scopeKey(user.scope)}`,
+    };
   }
 
   private filterToMessageContains(filter: string): string {

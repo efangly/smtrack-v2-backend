@@ -2,11 +2,12 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { LogDays } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DeviceService } from '../device/device.service';
+import { SYSTEM_SCOPE } from '../common/auth/access-scope';
 import { RedisService } from '../redis/redis.service';
 import { PartnerApiKeyContext } from './partner-api-key.service';
 
 const TIMESERIES_WINDOW_MS = 60 * 60 * 1000; // 1 ชั่วโมง — คงที่ ไม่มีทาง query ช่วงอื่นแล้ว (ADR-0003)
-const DEFAULT_WARD_LIST_LIMIT = 20;
+const DEFAULT_TENANT_LIST_LIMIT = 20;
 
 export type HistoryRangeKey = 'DAY_1' | 'DAY_7' | 'DAY_30';
 
@@ -40,7 +41,7 @@ export interface DeviceHistory {
   bucketInterval: string;
   buckets: HistoryBucket[];
 }
-const MAX_WARD_LIST_LIMIT = 100;
+const MAX_TENANT_LIST_LIMIT = 100;
 const DEFAULT_TELEMETRY_PAGE_LIMIT = 50;
 const MAX_TELEMETRY_PAGE_LIMIT = 200;
 
@@ -74,7 +75,7 @@ export interface DeviceWithLatestReading {
   latest: PartnerTelemetryPoint | null;
 }
 
-export interface ListDevicesByWardResult {
+export interface ListDevicesByTenantResult {
   devices: DeviceWithLatestReading[];
   total: number;
   page: number;
@@ -127,12 +128,13 @@ export class PartnerService {
   ) {}
 
   /**
-   * ward ที่ key ไม่ได้รับสิทธิ์ต้องตอบ 404 ไม่ใช่ 403 — ไม่ยืนยันว่า ward/serial นั้นมีอยู่จริง
+   * tenant ที่ key ไม่ได้รับสิทธิ์ต้องตอบ 404 ไม่ใช่ 403 — ไม่ยืนยันว่า tenant/serial นั้นมีอยู่จริง
    * ต่อผู้เรียกที่ไม่ได้รับอนุญาต (กัน enumeration) เหมือนพฤติกรรมเดิมตอน scope ด้วย serial
    */
-  private assertWardAllowed(apiKey: PartnerApiKeyContext, ward: string): void {
-    if (!apiKey.wards.has(ward)) {
-      throw new NotFoundException(`Ward ${ward} not found`);
+  private assertTenantAllowed(apiKey: PartnerApiKeyContext, tenantId: string | null): void {
+    // จุดติดตั้งที่ยังไม่มี tenant (ยังไม่ backfill) ไม่มี key ไหนเห็นได้
+    if (tenantId === null || !apiKey.tenants.has(tenantId)) {
+      throw new NotFoundException(`Tenant ${tenantId ?? ''} not found`.trim());
     }
   }
 
@@ -141,10 +143,10 @@ export class PartnerService {
     apiKey: PartnerApiKeyContext,
     serial: string,
   ): Promise<{ device: PartnerDeviceMetadata; timeseries: PartnerTelemetryPoint[] }> {
-    // ต้อง resolve device ก่อนเพื่อรู้ ward ของมัน แล้วค่อยเช็คสิทธิ์ — ต่างจาก serial-allowlist
+    // ต้อง resolve device ก่อนเพื่อรู้ tenant ของมัน แล้วค่อยเช็คสิทธิ์ — ต่างจาก serial-allowlist
     // เดิมที่เช็คก่อน query ได้เลยเพราะ scope ด้วย serial ตรง ๆ
-    const device = await this.deviceService.findOne(serial);
-    this.assertWardAllowed(apiKey, device.ward);
+    const device = await this.deviceService.findOne(serial, SYSTEM_SCOPE);
+    this.assertTenantAllowed(apiKey, device.tenantId);
 
     const from = new Date(Date.now() - TIMESERIES_WINDOW_MS);
     const logs = await this.prisma.logDays.findMany({
@@ -165,8 +167,8 @@ export class PartnerService {
     serial: string,
     range: HistoryRangeKey,
   ): Promise<DeviceHistory> {
-    const device = await this.deviceService.findOne(serial);
-    this.assertWardAllowed(apiKey, device.ward);
+    const device = await this.deviceService.findOne(serial, SYSTEM_SCOPE);
+    this.assertTenantAllowed(apiKey, device.tenantId);
 
     const { days, bucket } = HISTORY_RANGES[range];
     // bind cutoff ที่คำนวณจาก JS ไม่ใช้ NOW() ใน SQL — clock ของ DB server เคยเพี้ยนไป 7 ชม. จากเครื่องแอป
@@ -237,8 +239,8 @@ export class PartnerService {
     page: number;
     limit: number;
   }> {
-    const device = await this.deviceService.findOne(serial);
-    this.assertWardAllowed(apiKey, device.ward);
+    const device = await this.deviceService.findOne(serial, SYSTEM_SCOPE);
+    this.assertTenantAllowed(apiKey, device.tenantId);
 
     const page = pagination.page && pagination.page > 0 ? pagination.page : 1;
     const limit = Math.min(
@@ -269,29 +271,29 @@ export class PartnerService {
     };
   }
 
-  /** ทุก device ใน ward + reading ล่าสุดของแต่ละตัว (ไม่ใช่ full 1h series — เก็บไว้ที่ getDeviceSnapshot เท่านั้น) */
-  async listDevicesByWard(
+  /** ทุก device ใน tenant + reading ล่าสุดของแต่ละตัว (ไม่ใช่ full 1h series — เก็บไว้ที่ getDeviceSnapshot เท่านั้น) */
+  async listDevicesByTenant(
     apiKey: PartnerApiKeyContext,
-    ward: string,
+    tenantId: string,
     pagination: { page?: number; limit?: number },
-  ): Promise<ListDevicesByWardResult> {
-    this.assertWardAllowed(apiKey, ward);
+  ): Promise<ListDevicesByTenantResult> {
+    this.assertTenantAllowed(apiKey, tenantId);
 
     const page = pagination.page && pagination.page > 0 ? pagination.page : 1;
     const limit = Math.min(
-      pagination.limit && pagination.limit > 0 ? pagination.limit : DEFAULT_WARD_LIST_LIMIT,
-      MAX_WARD_LIST_LIMIT,
+      pagination.limit && pagination.limit > 0 ? pagination.limit : DEFAULT_TENANT_LIST_LIMIT,
+      MAX_TENANT_LIST_LIMIT,
     );
 
     const [rows, total] = await Promise.all([
       this.prisma.devices.findMany({
-        where: { ward },
+        where: { tenantId },
         include: WITH_HARDWARE,
         orderBy: { seq: 'asc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.devices.count({ where: { ward } }),
+      this.prisma.devices.count({ where: { tenantId } }),
     ]);
 
     // N+1 ตั้งใจ — ขนาด list ถูก cap ด้วย limit (สูงสุด 100) จึงไม่คุ้มที่จะเขียน query
@@ -317,7 +319,7 @@ export class PartnerService {
   /** audit log — เขียนแบบ best-effort ไม่ block/พัง response ของ RPC จริง */
   async logRequest(
     keyId: string,
-    identifiers: { serial?: string | null; ward?: string | null },
+    identifiers: { serial?: string | null; tenantId?: string | null },
     path: string,
     statusCode: number,
   ): Promise<void> {
@@ -325,7 +327,7 @@ export class PartnerService {
       data: {
         keyId,
         serial: identifiers.serial ?? null,
-        ward: identifiers.ward ?? null,
+        tenantId: identifiers.tenantId ?? null,
         path,
         statusCode,
       },

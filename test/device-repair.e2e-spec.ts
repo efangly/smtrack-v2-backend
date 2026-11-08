@@ -38,14 +38,17 @@ describe('Device repair (e2e)', () => {
       expect(res.status).toBe(401);
     });
 
-    it('ปฏิเสธ role ที่ไม่มีสิทธิ์ (USER ไม่ใช่ SUPER/SERVICE/ADMIN)', async () => {
-      const res = await request(app.getHttpServer())
-        .post(`${API_PREFIX}/repairs`)
-        .set('Authorization', bearerUser({ role: 'USER' }))
-        .send({ serial, devName: 'Fridge 1' });
+    it.each(['USER', 'ADMIN'])(
+      'ปฏิเสธ %s (เฉพาะ SUPER/SERVICE — กล่องไม่มี tenant ให้จำกัด)',
+      async (role) => {
+        const res = await request(app.getHttpServer())
+          .post(`${API_PREFIX}/repairs`)
+          .set('Authorization', bearerUser({ role }))
+          .send({ serial, devName: 'Fridge 1' });
 
-      expect(res.status).toBe(403);
-    });
+        expect(res.status).toBe(403);
+      },
+    );
 
     it('สร้างรายการซ่อมได้และบันทึกลง DB จริง', async () => {
       const res = await request(app.getHttpServer())

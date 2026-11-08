@@ -9,6 +9,17 @@ import { DeviceAssignmentService } from '../device/device-assignment.service';
 import { ProbeResolverService } from '../probe/probe-resolver.service';
 import { MetricsService } from '../observability/metrics.service';
 import { createMetricsMock, observabilityTestProviders } from '../observability/testing';
+import { NotFoundException } from '@nestjs/common';
+import { JwtPayloadDto } from '../common/dto/payload.dto';
+
+/** ผู้ใช้ใน tenant T1 — SUPER เห็นทุก tenant, departments 'ALL' = เห็นทั้ง tenant */
+const userIn = (role: string, departments: 'ALL' | string[] = 'ALL'): JwtPayloadDto => ({
+  id: 'u1',
+  name: 'user',
+  role,
+  scope: role === 'SUPER' ? { kind: 'GLOBAL' } : { kind: 'TENANT', tenantId: 'T1', departments },
+});
+const OPD = { tenantId: 'T1', departmentId: 'OPD' };
 
 describe('NotificationService', () => {
   let service: NotificationService;
@@ -19,15 +30,16 @@ describe('NotificationService', () => {
       updateMany: jest.Mock;
       count: jest.Mock;
       findMany: jest.Mock;
+      findUnique: jest.Mock;
     };
-    devices: { findUnique: jest.Mock };
+    devices: { findUnique: jest.Mock; findMany: jest.Mock };
   };
-  let redis: { getOrSet: jest.Mock; del: jest.Mock };
+  let redis: { getOrSet: jest.Mock; del: jest.Mock; delByPattern: jest.Mock };
   let mqtt: { publishNotification: jest.Mock };
-  let sse: { broadcast: jest.Mock };
+  let sse: { broadcast: jest.Mock; registerUnreadCounter: jest.Mock };
   let rabbitmq: { emit: jest.Mock };
   let metrics: jest.Mocked<MetricsService>;
-  let assignments: { resolveDeviceId: jest.Mock; resolveWard: jest.Mock };
+  let assignments: { resolveDeviceId: jest.Mock; resolveLocation: jest.Mock };
   let probes: { resolveProbeId: jest.Mock };
 
   const baseNotif = { id: 'n1', serial: 'SN-1', message: 'hi', detail: 'd' };
@@ -42,21 +54,26 @@ describe('NotificationService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         count: jest.fn().mockResolvedValue(0),
         findMany: jest.fn().mockResolvedValue([]),
+        findUnique: jest.fn().mockResolvedValue({ device: OPD }),
       },
-      devices: { findUnique: jest.fn().mockResolvedValue({ name: 'Fridge A' }) },
+      devices: {
+        findUnique: jest.fn().mockResolvedValue({ name: 'Fridge A' }),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
     };
     redis = {
       getOrSet: jest.fn().mockImplementation((_key, _ttl, factory) => factory()),
       del: jest.fn().mockResolvedValue(undefined),
+      delByPattern: jest.fn().mockResolvedValue(undefined),
     };
     mqtt = { publishNotification: jest.fn().mockResolvedValue(undefined) };
-    sse = { broadcast: jest.fn() };
+    sse = { broadcast: jest.fn(), registerUnreadCounter: jest.fn() };
     rabbitmq = { emit: jest.fn().mockResolvedValue(undefined) };
     metrics = createMetricsMock();
     // กล่องนี้ติดตั้งอยู่ที่จุดติดตั้ง dev-1 — notification ถูกประทับ deviceId เช่นเดียวกับ log
     assignments = {
       resolveDeviceId: jest.fn().mockResolvedValue('dev-1'),
-      resolveWard: jest.fn().mockResolvedValue('OPD'),
+      resolveLocation: jest.fn().mockResolvedValue(OPD),
     };
     probes = { resolveProbeId: jest.fn().mockResolvedValue('probe-1') };
 
@@ -141,12 +158,12 @@ describe('NotificationService', () => {
     const result = await service.create({ serial: 'SN-1', message: 'hi', detail: 'd' });
 
     expect(mqtt.publishNotification).toHaveBeenCalledWith('dev-1', baseNotif);
-    // ward ติดไปด้วยเพื่อให้ SSE กรองให้ client ที่ถูก scope ตาม ward
-    // และแนบ unreadCount (ของ ward นี้) เข้าไปเป็น field เพิ่มเติมบน payload เดิม
+    // ตำแหน่ง (tenant/department) ติดไปด้วยเพื่อให้ SSE กรองตาม scope ของ client
+    // และแนบ unreadCount (ของ department นี้) เข้าไปเป็น field เพิ่มเติมบน payload เดิม
     expect(sse.broadcast).toHaveBeenCalledWith(
       'notification',
       { ...baseNotif, deviceName: 'Fridge A', unreadCount: 0 },
-      'OPD',
+      OPD,
     );
     expect(rabbitmq.emit).toHaveBeenCalledWith(
       'fcm-push',
@@ -222,7 +239,7 @@ describe('NotificationService', () => {
       prisma.notifications.update.mockResolvedValue({ ...baseNotif, isRead: true });
       prisma.notifications.count.mockResolvedValue(3);
 
-      const result = await service.markRead('n1');
+      const result = await service.markRead('n1', userIn('USER', ['OPD']));
 
       expect(prisma.notifications.update).toHaveBeenCalledWith({
         where: { id: 'n1' },
@@ -231,53 +248,126 @@ describe('NotificationService', () => {
       expect(sse.broadcast).toHaveBeenCalledWith(
         'notification',
         { action: 'read', notificationId: 'n1', unreadCount: 3 },
-        'OPD',
+        OPD,
       );
       expect(result.isRead).toBe(true);
     });
 
-    it('markAllRead: updateMany ward-scoped แล้ว broadcast action=read-all', async () => {
+    it('markRead: การแจ้งเตือนของ tenant อื่นตอบ 404 และไม่ถูกแก้', async () => {
+      prisma.notifications.findUnique.mockResolvedValue({
+        device: { tenantId: 'T2', departmentId: 'OPD' },
+      });
+
+      await expect(service.markRead('n1', userIn('ADMIN', 'ALL'))).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.notifications.update).not.toHaveBeenCalled();
+    });
+
+    it('markAllRead: กรองตาม scope แล้ว broadcast action=read-all ทุก department ที่ผู้ใช้เห็น', async () => {
       prisma.notifications.updateMany.mockResolvedValue({ count: 5 });
       prisma.notifications.count.mockResolvedValue(0);
 
-      const result = await service.markAllRead({
-        id: 'u1',
-        name: 'user',
-        role: 'USER',
-        wardId: 'OPD',
-      } as never);
+      const result = await service.markAllRead(userIn('USER', ['OPD', 'ICU']));
 
       expect(prisma.notifications.updateMany).toHaveBeenCalledWith({
-        where: { device: { ward: 'OPD' }, isRead: false },
+        where: {
+          device: { tenantId: 'T1', departmentId: { in: ['OPD', 'ICU'] } },
+          isRead: false,
+        },
         data: { isRead: true, readAt: expect.any(Date) },
       });
+      expect(sse.broadcast).toHaveBeenCalledTimes(2);
       expect(sse.broadcast).toHaveBeenCalledWith(
         'notification',
         { action: 'read-all', unreadCount: 0 },
-        'OPD',
+        OPD,
+      );
+      expect(sse.broadcast).toHaveBeenCalledWith(
+        'notification',
+        { action: 'read-all', unreadCount: 0 },
+        { tenantId: 'T1', departmentId: 'ICU' },
       );
       expect(result).toEqual({ count: 5 });
     });
 
-    it('findUnreadCount: นับแบบ ward-scoped ตาม role ผู้ใช้', async () => {
+    it('markAllRead: ผู้ที่เห็นทั้ง tenant broadcast ทุก department ที่มีอุปกรณ์ใน tenant', async () => {
+      prisma.devices.findMany.mockResolvedValue([{ departmentId: 'OPD' }, { departmentId: 'ER' }]);
+
+      await service.markAllRead(userIn('ADMIN', 'ALL'));
+
+      expect(prisma.notifications.updateMany).toHaveBeenCalledWith({
+        where: { device: { tenantId: 'T1' }, isRead: false },
+        data: { isRead: true, readAt: expect.any(Date) },
+      });
+      expect(prisma.devices.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenantId: 'T1' }, distinct: ['departmentId'] }),
+      );
+      expect(sse.broadcast).toHaveBeenCalledTimes(2);
+    });
+
+    it('markAllRead: GLOBAL broadcast ครั้งเดียวแบบไม่ระบุตำแหน่ง', async () => {
+      await service.markAllRead(userIn('SUPER'));
+
+      expect(prisma.notifications.updateMany).toHaveBeenCalledWith({
+        where: { isRead: false },
+        data: { isRead: true, readAt: expect.any(Date) },
+      });
+      expect(sse.broadcast).toHaveBeenCalledTimes(1);
+      expect(sse.broadcast).toHaveBeenCalledWith(
+        'notification',
+        { action: 'read-all', unreadCount: 0 },
+        { tenantId: null, departmentId: null },
+      );
+    });
+
+    it('findUnreadCount: นับตาม tenant และ department ของผู้ใช้', async () => {
       prisma.notifications.count.mockResolvedValue(7);
 
-      const count = await service.findUnreadCount({
-        id: 'u1',
-        name: 'user',
-        role: 'USER',
-        wardId: 'OPD',
-      } as never);
+      const count = await service.findUnreadCount(userIn('USER', ['OPD', 'ICU']));
 
       expect(prisma.notifications.count).toHaveBeenCalledWith({
-        where: { device: { ward: 'OPD' }, isRead: false },
+        where: {
+          device: { tenantId: 'T1', departmentId: { in: ['OPD', 'ICU'] } },
+          isRead: false,
+        },
       });
       expect(count).toBe(7);
+    });
+
+    it('findUnreadCount: user ที่ไม่ผูก department ใดเลยนับได้ 0 แถว (ไม่ใช่ทั้งตาราง)', async () => {
+      await service.findUnreadCount(userIn('USER', []));
+
+      expect(prisma.notifications.count).toHaveBeenCalledWith({
+        where: { device: { tenantId: 'T1', departmentId: { in: [] } }, isRead: false },
+      });
+    });
+
+    it('onModuleInit: register ตัวนับ unread ให้ SseService ใช้ scope เดียวกับ findUnreadCount', async () => {
+      service.onModuleInit();
+      const counter = sse.registerUnreadCounter.mock.calls[0][0];
+      prisma.notifications.count.mockResolvedValue(4);
+
+      await expect(counter(userIn('ADMIN', 'ALL'))).resolves.toBe(4);
+      expect(prisma.notifications.count).toHaveBeenCalledWith({
+        where: { device: { tenantId: 'T1' }, isRead: false },
+      });
+    });
+  });
+
+  describe('findBySerial', () => {
+    it('กรองรายแถวตาม scope และแยก cache ตาม scope', async () => {
+      await service.findBySerial('SN-1', userIn('ADMIN', 'ALL'));
+
+      expect(prisma.notifications.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { device: { tenantId: 'T1' }, serial: 'SN-1' } }),
+      );
+      expect(redis.getOrSet.mock.calls[0][0]).toBe('notification:serial:SN-1:t:T1:all');
     });
   });
 
   describe('findCount (dashboard)', () => {
-    it('นับเฉพาะ notification ย้อนหลัง 24 ชม. และคง ward scope', async () => {
+    it('นับเฉพาะ notification ย้อนหลัง 24 ชม. และคง scope ของผู้ใช้', async () => {
       prisma.notifications.findMany.mockResolvedValue([
         { message: 'SD/OFF' },
         { message: 'AC/OFF' },
@@ -288,15 +378,10 @@ describe('NotificationService', () => {
       ]);
       const before = Date.now();
 
-      const result = await service.findCount({
-        id: 'u1',
-        name: 'user',
-        role: 'USER',
-        wardId: 'OPD',
-      } as never);
+      const result = await service.findCount(userIn('USER', ['OPD']));
 
       const arg = prisma.notifications.findMany.mock.calls[0][0];
-      expect(arg.where.device).toEqual({ ward: 'OPD' });
+      expect(arg.where.device).toEqual({ tenantId: 'T1', departmentId: { in: ['OPD'] } });
       const from: Date = arg.where.createAt.gte;
       expect(Math.abs(before - from.getTime() - 24 * 60 * 60 * 1000)).toBeLessThan(5000);
       expect(arg.select).toEqual({ message: true });

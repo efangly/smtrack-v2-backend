@@ -75,6 +75,16 @@ groups:
         annotations:
           summary: "RabbitMQ consumer error rate เกิน 10% ที่ queue {{ $labels.queue }}"
 
+      # legacy sync (ADR-0007): ทุก error = message เข้า legacy_sync_dlq = ข้อมูลที่ยังไม่เข้า v2
+      # จึง alert ตั้งแต่ตัวแรก ไม่ใช้ threshold เป็นสัดส่วน — ลบ rule นี้หลัง cutover
+      - alert: SmtrackLegacySyncDeadLettered
+        expr: sum(increase(smtrack_rmq_messages_total{queue="legacy_sync_queue", status="error"}[15m])) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "legacy sync มี message เข้า DLQ"
+          description: "{{ $value }} message ใน 15 นาทีล่าสุด — ดู log ของ LegacySyncController/RmqAck แล้ว replay จาก legacy_sync_dlq (docs/legacy-sync-contract.md §6)"
+
       - alert: SmtrackMqttIngestStalled
         expr: absent_over_time(smtrack_mqtt_messages_total[15m])
         for: 0m
@@ -124,3 +134,31 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "SSE active connections ตกลงเหลือ 0 จากที่เคยมี client เชื่อมต่ออยู่"
+
+  # สถานะ archive คำนวณจาก DB โดย API pod (ArchiveMetricsService) ไม่ใช่จากตัว CronJob
+  # จึงจับได้ทั้งกรณี Job ล้มเหลว, CronJob ถูก suspend/ไม่เคยรัน และ Job ถูกลบทิ้งตาม history limit
+  - name: smtrack-archive
+    rules:
+      - alert: SmtrackArchiveOverdue
+        expr: max by (table) (smtrack_archive_overdue_months) > 0
+        for: 1h
+        labels: { severity: critical }
+        annotations:
+          summary: "archive ของตาราง {{ $labels.table }} ค้างเกินกำหนด {{ $value }} เดือน"
+          description: "เดือนที่จบแล้วเกิน 3 วันยังไม่ถูก export ขึ้น object storage — chunk ของเดือนนั้นจะไม่ถูกลบ (ADR-0005) ดิสก์จะโตขึ้นเรื่อย ๆ ตรวจ Job archive ล่าสุดและตาราง archive_job_run (GET /health/archive ดูสาเหตุ)"
+
+      - alert: SmtrackArchiveNeverSucceeded
+        expr: max(smtrack_archive_last_success_timestamp) == 0
+        for: 6h
+        labels: { severity: warning }
+        annotations:
+          summary: "ยังไม่เคยมี export-and-drop สำเร็จเลย"
+          description: "อาจเป็นช่วงก่อน cut-over หรือ CronJob ยังไม่ถูก deploy — ถ้า deploy แล้วให้ตรวจ schedule/suspend"
+
+      - alert: SmtrackArchiveMetricsStopped
+        expr: absent_over_time(smtrack_archive_overdue_months[30m])
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "ไม่มี metric สถานะ archive เข้ามาเกิน 30 นาที"
+          description: "API pod ไม่ส่ง gauge (query DB ล้มเหลว หรือ OTel ไม่ทำงาน) — alert SmtrackArchiveOverdue จะไม่ทำงานจนกว่าจะกลับมา"

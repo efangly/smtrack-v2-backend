@@ -17,8 +17,11 @@ export class MobileController {
     return this.mobileService.findNotification(req.user);
   }
 
-  @Get(':ward')
-  findWard(@Param('ward') ward: string) {
-    return this.mobileService.findWard(ward);
+  @Get('department/:departmentId')
+  findByDepartment(
+    @Param('departmentId') departmentId: string,
+    @Req() req: Request & { user: JwtPayloadDto },
+  ) {
+    return this.mobileService.findByDepartment(departmentId, req.user);
   }
 }

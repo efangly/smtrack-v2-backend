@@ -4,6 +4,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { QueryGraphDto } from './dto/query-graph.dto';
 import { resolveRange, TimeRange } from '../common/time/range.util';
+import { RestoredWindowService } from '../backup/restored-window.service';
+import { hotWindowStart } from '../backup/archive.util';
 
 /** channel ที่ใช้แทน series ของ log ที่ยังไม่ถูกผูก probe — ไม่ใช่ channel จริงของอุปกรณ์ */
 export const UNASSIGNED_CHANNEL = 'unassigned';
@@ -32,6 +34,7 @@ export class GraphService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly restored: RestoredWindowService,
   ) {}
 
   /** `deviceId` = จุดติดตั้ง ไม่ใช่ serial ของกล่อง จึงได้กราฟต่อเนื่องข้ามการสลับเครื่อง */
@@ -40,11 +43,16 @@ export class GraphService {
     const { from, to } = resolveRange(range, query.from, query.to);
     const probeId = query.probeId;
 
+    // ช่วงที่ย้อนเกิน hot window: นำข้อมูลกลับจาก archive ก่อน (ครั้งแรกอาจตอบ 202 ให้ยิงซ้ำ)
+    // ทำนอก cache เพื่อให้การอ่านต่ออายุ TTL ของข้อมูลที่ restore ไว้เสมอ
+    await this.restored.ensureRange(deviceId, from, to);
+    const readArchive = from < hotWindowStart();
+
     return this.redis.getOrSet(
       `graph:${deviceId}:${range}:${from.toISOString()}:${to.toISOString()}:${probeId ?? 'all'}`,
       30,
       async () => {
-        const [probes, logs] = await Promise.all([
+        const [probes, hotLogs, archivedLogs] = await Promise.all([
           this.prisma.probes.findMany({
             where: { deviceId, ...(probeId ? { id: probeId } : {}) },
             orderBy: { channel: 'asc' },
@@ -57,8 +65,24 @@ export class GraphService {
             },
             orderBy: { sendTime: 'asc' },
           }),
+          readArchive
+            ? this.prisma.logDayArchive.findMany({
+                where: {
+                  deviceId,
+                  sendTime: { gte: from, lte: to },
+                  ...(probeId ? { probeId } : {}),
+                },
+                orderBy: { sendTime: 'asc' },
+              })
+            : Promise.resolve([]),
         ]);
 
+        // archive เป็นส่วนต้นของเวลา (เก่ากว่า log_days เสมอ) — ต่อหน้าแล้วเรียงซ้ำกันพลาด
+        const logs: LogDays[] = readArchive
+          ? [...archivedLogs, ...hotLogs].sort(
+              (a, b) => a.sendTime.getTime() - b.sendTime.getTime(),
+            )
+          : hotLogs;
         return this.groupIntoSeries(probes, logs, probeId);
       },
     );
